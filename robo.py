@@ -6,6 +6,7 @@ import traceback
 import pdb
 import ctypes
 import copy
+import time
 
 from threading import Thread, Event, Lock, currentThread
 from math import pi,atan2,sin,cos
@@ -22,7 +23,6 @@ import gtksourceview2
 
 class Robot(object):
     def __init__(self,x=0,y=0,heading=0):
-        print dir()
         global environment
         
         self.x = x
@@ -42,8 +42,11 @@ class Robot(object):
         return self.environment.canvas
     
     def queueRedraw(self):
+        try:
             self.environment.canvas.widget.queue_draw_area(*(self.lastDraw))
             self.environment.canvas.widget.queue_draw_area(*self.drawingBoundingBox())
+        except:
+            pass # probably there is no canvas to draw to right now
         
     def boundingBox(self):
         return self.x-self.xextent, self.y-self.yextent,self.x+self.xextent,self.y+self.yextent
@@ -51,7 +54,7 @@ class Robot(object):
     def drawingBoundingBox(self):    
         x1,y1,x2,y2 = self.boundingBox()
         w,h = self.getCanvas().get_size()
-        return x1+w/2,y1+h/2,x2+w/2,y2+h/2
+        return x1+w/2,h/2-y2,x2+w/2,h/2-y1
     
     def redraw(self, canvas, gc, x,y,w,h):
         w,h = self.getCanvas().get_size()
@@ -63,7 +66,7 @@ class Robot(object):
             self.draw(canvas,gc)
     def draw(self, canvas, gc):
         w,h = self.getCanvas().get_size()
-        drawx,drawy=self.x+w/2,self.y+h/2
+        drawx,drawy=self.x+w/2,h/2-self.y
         canvas.draw_arc(gc, False, drawx-self.xextent,drawy-self.yextent,2*self.xextent,2*self.yextent,angle1=0,angle2=64*360)
         canvas.draw_line(gc,drawx,drawy,int(drawx+self.xextent*sin(self.heading*pi/180)),int(drawy-self.yextent*cos(self.heading*pi/180)))
         self.lastDraw=self.drawingBoundingBox()
@@ -126,7 +129,7 @@ class TvConsole(object):
         self.write('Robo Interacive Python Interpreter\n' +
                     sys.version + ' on ' + sys.platform + 
                     '\nType "help", "copyright", "credits" or "license" for more information.\n')
-
+        
         self.ps1 = (sys.ps1 if hasattr(sys,'ps1') else '>>> ')
         self.ps2 = (sys.ps2 if hasattr(sys,'ps2') else '... ')
         self.prompt = self.ps1
@@ -478,7 +481,7 @@ class Gui(object):
         self.window.set_size_request(800, 600)
         
         self.hpane = gtk.HPaned()
-    
+        
         self.vpane = gtk.VPaned()
         
         
@@ -528,6 +531,14 @@ class Gui(object):
         self.graphics.connect("configure_event", self.configure_graphics)
         self.graphics.connect("expose_event", self.push_graphics)
         
+        self.canvas = gtk.gdk.Pixmap(self.graphics.window, 1, 1, depth=24)
+        self.canvas.widget = self.graphics.window
+        environment.canvas = self.canvas
+        self.drawing = gtk.gdk.Pixmap(self.graphics.window, 1, 1, depth=24)
+        environment.drawing = self.drawing
+        self.background = gtk.gdk.Pixmap(self.graphics.window, 1, 1, depth=24)
+        environment.background = self.background
+        
         self.hpane.add1(self.vpane)
         self.vpane.add2(self.console.sw)
         self.hpane.add2(self.codeSw)
@@ -545,10 +556,14 @@ class Gui(object):
         #    obj.show()
         self.window.show_all()
         
-        gtk.gdk.threads_init()
+        
+        if sys.platform=='win32':
+            gobject.timeout_add(400,self.sleeper)
+        else:
+            gtk.gdk.threads_init()
         
         #colormap = self.canvas.get_colormap()
-
+        
         #white = colormap.alloc_color('white')
         #black = colormap.alloc_color('black')
         
@@ -568,7 +583,9 @@ class Gui(object):
     def load_code(self,file='source.py'):
         f=open(file)
         return f.read()
-        
+    def sleeper(self):
+        time.sleep(.001)
+        return 1
     def configure_graphics(self, widget, event):
         
         x,y,w,h = widget.get_allocation()
@@ -597,7 +614,7 @@ class Gui(object):
     def main(self):
         gtk.main()
 
-    
+
 
 if __name__ == '__main__':
     gui = Gui()
