@@ -2,7 +2,6 @@
 
 import code
 import sys
-import vte
 import traceback
 import pdb
 import ctypes
@@ -11,8 +10,6 @@ import copy
 from threading import Thread, Event, Lock, currentThread
 from math import pi,atan2,sin,cos
 
-sys.argv.append('--sync')
-
 import pygtk
 pygtk.require('2.0')
 
@@ -20,9 +17,8 @@ import gtk
 import gobject
 import pango
 import gtksourceview2
-import scintilla
+#import scintilla
 
-sys.argv.remove('--sync')
 
 class Robot(object):
     def __init__(self,x=0,y=0,heading=0):
@@ -130,8 +126,10 @@ class TvConsole(object):
         self.write('Robo Interacive Python Interpreter\n' +
                     sys.version + ' on ' + sys.platform + 
                     '\nType "help", "copyright", "credits" or "license" for more information.\n')
-        
-        self.prompt = sys.ps1
+
+        self.ps1 = (sys.ps1 if hasattr(sys,'ps1') else '>>> ')
+        self.ps2 = (sys.ps2 if hasattr(sys,'ps2') else '... ')
+        self.prompt = self.ps1
         self.write(self.prompt)
         gobject.idle_add(self.setInteractiveLine,'')
         self.running = True
@@ -168,10 +166,10 @@ class TvConsole(object):
                             
                     if incomplete:
                         self.incomplete.append(input)
-                        self.prompt = sys.ps2
+                        self.prompt = self.ps2
                     else:
                         self.incomplete=[]
-                        self.prompt = sys.ps1
+                        self.prompt = self.ps1
                     self.write(self.prompt)
                     gobject.idle_add(self.setInteractiveLine,self.interactiveLine)
             
@@ -179,7 +177,7 @@ class TvConsole(object):
                 self.inputReady.clear()
                 self.write('KeyboardInterrupt\n')
                 self.incomplete=[]
-                self.prompt = sys.ps1
+                self.prompt = self.ps1
                 self.write(self.prompt)
                 with self.ipLock:
                     self.inputPending = ''
@@ -521,6 +519,8 @@ class Gui(object):
         try:
             code=self.load_code()
             self.codeTv.get_buffer().set_text(code)
+        except IOError:
+            pass
         except Exception as e:
             traceback.print_exc()
         
@@ -541,8 +541,9 @@ class Gui(object):
         #self.codeSw.set_size_request(300,600)
         self.console.sw.set_size_request(800,600)
         
-        for obj in [self.graphics,self.console.tv,self.console.sw,self.codeTv,self.codeSw,self.vpane,self.hpane,self.window]:
-            obj.show()
+        #for obj in [self.graphics,self.console.tv,self.console.sw,self.codeTv,self.codeSw,self.vpane,self.hpane,self.window]:
+        #    obj.show()
+        self.window.show_all()
         
         gtk.gdk.threads_init()
         
@@ -561,10 +562,10 @@ class Gui(object):
     def save_code(self):
         b = self.codeTv.get_buffer()
         source = b.get_text(*(b.get_bounds()))
-        f=open('code.py','w')
+        f=open('source.py','w')
         f.write(source)
         return source
-    def load_code(self,file='code.py'):
+    def load_code(self,file='source.py'):
         f=open(file)
         return f.read()
         
