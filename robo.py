@@ -94,6 +94,7 @@ class TvConsole(object):
         self.tv = gtk.TextView(buffer=None)
         self.tv.set_wrap_mode(gtk.WRAP_WORD)
         self.tv.set_editable(False)
+        self.tv.connect("destroy", self.stopReadLoop)
         
         self.sw = gtk.ScrolledWindow(hadjustment=None, vadjustment=None)
         self.sw.set_policy(gtk.POLICY_AUTOMATIC, gtk.POLICY_AUTOMATIC)
@@ -143,6 +144,13 @@ class TvConsole(object):
     def setLocals(self,locals):
         self.i2.locals.update(locals)
     
+    def stopReadLoop(self,widget,data=None):
+        self.running = False
+        self.inputReady.set()
+        sys.stdin=sys.__stdin__
+        sys.stdout=sys.__stdout__
+        sys.stderr=sys.__stderr__
+    
     def readLoop(self):
         while self.running:
             try:
@@ -188,7 +196,7 @@ class TvConsole(object):
                 gobject.idle_add(self.setInteractiveLine,self.interactiveLine)
             except Exception:
                 traceback.print_exc()
-            
+    
     def processInput(self,input):
         
         command = ''.join(self.incomplete)+input
@@ -574,15 +582,18 @@ class Gui(object):
         #self.gc.set_foreground(black)
         
 #        Thread(target=self.main,args=()).start()
+    
     def save_code(self):
         b = self.codeTv.get_buffer()
         source = b.get_text(*(b.get_bounds()))
         f=open('source.py','w')
         f.write(source)
         return source
+    
     def load_code(self,file='source.py'):
         f=open(file)
         return f.read()
+    
     def sleeper(self):
         time.sleep(.001)
         return 1
@@ -610,7 +621,7 @@ class Gui(object):
             obj.redraw(self.canvas, widget.get_style().black_gc, x,y,w,h)
         widget.window.draw_drawable(widget.get_style().fg_gc[gtk.STATE_NORMAL],self.canvas, x, y, x, y, w, h)
         return False
-        
+    
     def main(self):
         gtk.main()
 
