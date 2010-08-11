@@ -127,12 +127,13 @@ class TvConsole(object):
         
         self.getSource = getSource
         
+        self.ps1 = (sys.ps1 if hasattr(sys,'ps1') else '>>> ')
+        self.ps2 = (sys.ps2 if hasattr(sys,'ps2') else '... ')
+    
+    def start(self):
         self.write('Robo Interacive Python Interpreter\n' +
                     sys.version + ' on ' + sys.platform + 
                     '\nType "help", "copyright", "credits" or "license" for more information.\n')
-        
-        self.ps1 = (sys.ps1 if hasattr(sys,'ps1') else '>>> ')
-        self.ps2 = (sys.ps2 if hasattr(sys,'ps2') else '... ')
         self.prompt = self.ps1
         self.write(self.prompt)
         gobject.idle_add(self.setInteractiveLine,'')
@@ -140,7 +141,7 @@ class TvConsole(object):
         
         self.readLoopThread = Thread(target=self.readLoop,args=())
         self.readLoopThread.start()
-    
+        
     def setLocals(self,locals):
         self.i2.locals.update(locals)
     
@@ -261,7 +262,7 @@ class TvConsole(object):
                         self.interactiveLine += '\n'
                         self.inputPending = self.interactiveLine
                     self.setInteractiveLine(self.interactiveLine)
-                    ctypes.pythonapi.PyThreadState_SetAsyncExc(self.readLoopThread.ident, ctypes.py_object(KeyboardInterrupt))
+                    ctypes.pythonapi.PyThreadState_SetAsyncExc(self.readLoopThread.ident, ctypes.py_object(KeyboardInterrupt()))
                     self.inputReady.set()
                     return True
             string=''
@@ -582,7 +583,9 @@ class Gui(object):
         #self.gc.set_foreground(black)
         
 #        Thread(target=self.main,args=()).start()
-    
+        
+        self.console.start()
+        
     def save_code(self):
         b = self.codeTv.get_buffer()
         source = b.get_text(*(b.get_bounds()))
@@ -626,6 +629,15 @@ class Gui(object):
         gtk.main()
 
 
+def main():
+    gui = Gui()
+    try:
+        gui.main()
+    except Exception as e:
+        traceback.print_exc()
+    except KeyboardInterrupt as e:
+        traceback.print_exc()
+    return gui
 
 if __name__ == '__main__':
     gui = Gui()
