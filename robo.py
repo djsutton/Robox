@@ -173,7 +173,7 @@ class TvConsole(object):
                             self.historyModified.pop(self.historyIndex)
                         self.historyIndex = len(self.history)
                         
-                if input != None:
+                if input != None and self.running:
                     incomplete = self.processInput(input)
                             
                     if incomplete:
@@ -182,18 +182,22 @@ class TvConsole(object):
                     else:
                         self.incomplete=[]
                         self.prompt = self.ps1
+                    
                     self.write(self.prompt)
+                    self.inputPending=self.inputPending.rstrip('\n')
+                    self.interactiveLine = self.inputPending
                     gobject.idle_add(self.setInteractiveLine,self.interactiveLine)
+                    self.inputReady.clear()
             
             except KeyboardInterrupt:
-                self.inputReady.clear()
                 self.write('KeyboardInterrupt\n')
+                with self.ipLock:
+                    self.inputReady.clear()
+                    self.inputPending = ''
+                    self.interactiveLine = self.inputPending
                 self.incomplete=[]
                 self.prompt = self.ps1
                 self.write(self.prompt)
-                with self.ipLock:
-                    self.inputPending = ''
-                    self.interactiveLine = self.inputPending
                 gobject.idle_add(self.setInteractiveLine,self.interactiveLine)
             except Exception:
                 traceback.print_exc()
@@ -215,18 +219,21 @@ class TvConsole(object):
          self.incomplete[0].startswith('class'))):
             incomplete = True
         else:
-            sys.stdin = self
-            sys.stdout = self
-            sys.stderr = self
             if self.getSource:
                 source = self.getSource()
+                sys.stdin = self
+                sys.stdout = self
+                sys.stderr = self
                 try:
                     code = compile(source,'<code area>','exec')
                     self.i2.runcode(code)
                 except SyntaxError as e:
-                    print e
                     self.i2.showsyntaxerror('<code area>')
-            incomplete = self.i2.runsource(command,'<console>','single')
+            else:
+                sys.stdin = self
+                sys.stdout = self
+                sys.stderr = self
+            incomplete = self.i2.runsource(command,'<stdin>','single')
             sys.stderr = sys.__stderr__
             sys.stdout = sys.__stdout__
             sys.stdin = sys.__stdin__
@@ -262,7 +269,9 @@ class TvConsole(object):
                         self.interactiveLine += '\n'
                         self.inputPending = self.interactiveLine
                     self.setInteractiveLine(self.interactiveLine)
-                    ctypes.pythonapi.PyThreadState_SetAsyncExc(self.readLoopThread.ident, ctypes.py_object(KeyboardInterrupt()))
+#                    sys.__stdout__.write('KeyboardInterrupt to'+str(ctypes.c_long(self.readLoopThread.ident))+'\n')
+                    val = ctypes.pythonapi.PyThreadState_SetAsyncExc(ctypes.c_long(self.readLoopThread.ident), ctypes.py_object(KeyboardInterrupt))
+#                    sys.__stdout__.write(str(val)+'\n')
                     self.inputReady.set()
                     return True
             string=''
@@ -282,6 +291,7 @@ class TvConsole(object):
                     self.cursor = len(self.interactiveLine)
             
         elif event.keyval == 65364: # down
+#            print self.inputPending
             with self.ipLock:
                 oldIndex = self.historyIndex
                 self.historyIndex += 1
@@ -591,11 +601,14 @@ class Gui(object):
         source = b.get_text(*(b.get_bounds()))
         f=open('source.py','w')
         f.write(source)
+        f.close()
         return source
     
     def load_code(self,file='source.py'):
         f=open(file)
-        return f.read()
+        text=f.read()
+        f.close()
+        return text
     
     def sleeper(self):
         time.sleep(.001)
