@@ -12,8 +12,13 @@ import gtk
 import gobject
 import pango
 import gtksourceview2
-#import scintilla
 
+if sys.platform == 'win32':
+    kernel32 = ctypes.windll.kernel32
+    CTRL_C_EVENT = 0     # constants from http://msdn.microsoft.com/en-us/library/ms683155%28VS.85%29.aspx
+    CTRL_BREAK_EVENT = 1 # this is in the win32con library, but that would be *another* download requirement
+else:
+    kernel32 = None
 
 class Robot(object):
     def __init__(self,x=0,y=0,heading=0):
@@ -58,6 +63,7 @@ class Robot(object):
             if self.gc:
                 gc = self.gc
             self.draw(canvas,gc)
+    
     def draw(self, canvas, gc):
         w,h = self.getCanvas().get_size()
         drawx,drawy=self.x+w/2,h/2-self.y
@@ -71,6 +77,7 @@ class Environment(object):
         self.robots=[]
         self.items=[]
         self.background = None
+
 
 class TvConsole(object):
     def __init__(self,locals=None, getSource=None):
@@ -135,7 +142,7 @@ class TvConsole(object):
         else:
             self.readLoopThread = Thread(target=self.readLoop,args=())
             self.readLoopThread.start()
-        
+    
     def setLocals(self,locals):
         self.i2.locals.update(locals)
     
@@ -151,48 +158,12 @@ class TvConsole(object):
                     sys.version + ' on ' + sys.platform + 
                     '\nType "help", "copyright", "credits" or "license" for more information.\n')
         gobject.idle_add(self.setInteractiveLine,'')
+        
         while self.running:
             try:
-                input = None
                 self.inputWaiting.set()
                 self.inputReady.wait()
-                with self.ipLock:
-                    self.inputWaiting.clear()
-                    if self.inputReady.isSet():
-                        
-                        self.inputReady.clear()
-                        input = self.inputPending
-                        self.inputPending = ''
-                        self.interactiveLine = self.inputPending
-                        self.cursor = 0
-                        
-                        if (not self.history or self.history[-1] != input.rstrip()) and input.rstrip():
-                            self.history.append(input.rstrip())
-                        
-                        if self.historyIndex in self.historyModified:
-                            self.historyModified.pop(self.historyIndex)
-                        self.historyIndex = len(self.history)
-                        
-                if input != None and self.running:
-                    incomplete = self.processInput(input)
-                            
-                    if incomplete:
-                        self.incomplete.append(input)
-                        self.prompt = self.ps2
-                    else:
-                        self.incomplete=[]
-                        self.prompt = self.ps1
-                    
-                    self.inputWaiting.set()
-                    with self.ipLock:
-                        if not self.inputPending.rstrip('\n'):
-                            self.inputReady.clear()
-                            self.inputPending=''
-                        
-                        self.interactiveLine = self.inputPending
-                    setEvt=Event()
-                    gobject.idle_add(self.setInteractiveLine,self.interactiveLine,setEvt)
-                    setEvt.wait()
+                self.processInput()
             
             except KeyboardInterrupt:
                 self.write('KeyboardInterrupt\n')
@@ -208,14 +179,53 @@ class TvConsole(object):
                 traceback.print_exc()
                 self.inputWaiting.set()
     
-    def processInput(self,input):
+    def processInput(self):
+        with self.ipLock:
+            input = None
+            self.inputWaiting.clear()
+            if self.inputReady.isSet():
+                
+                self.inputReady.clear()
+                input = self.inputPending
+                self.inputPending = ''
+                self.interactiveLine = self.inputPending
+                self.cursor = 0
+                
+                if (not self.history or self.history[-1] != input.rstrip()) and input.rstrip():
+                    self.history.append(input.rstrip())
+                
+                if self.historyIndex in self.historyModified:
+                    self.historyModified.pop(self.historyIndex)
+                self.historyIndex = len(self.history)
+                
+        if input != None and self.running:
+            
+            incomplete = self.executeInput(input)
+                    
+            if incomplete:
+                self.incomplete.append(input)
+                self.prompt = self.ps2
+            else:
+                self.incomplete=[]
+                self.prompt = self.ps1
+            
+            self.inputWaiting.set()
+            with self.ipLock:
+                if not self.inputPending.rstrip('\n'):
+                    self.inputReady.clear()
+                    self.inputPending=''
+                
+                self.interactiveLine = self.inputPending
+            setEvt=Event()
+            gobject.idle_add(self.setInteractiveLine,self.interactiveLine,setEvt)
+            setEvt.wait()
+    
+    def executeInput(self,input):
         
         command = ''.join(self.incomplete)+input
         
         if not command.strip():
             command = 'None'
-        
-        #print list(ord(c) for c in input)
         
         if (self.incomplete and
          input != '\n' and
@@ -294,7 +304,7 @@ class TvConsole(object):
                         self.interactiveLine = self.history[self.historyIndex]
                 if oldIndex != self.historyIndex:
                     self.cursor = len(self.interactiveLine)
-            
+        
         elif event.keyval == 65364: # down
             with self.ipLock:
                 oldIndex = self.historyIndex
@@ -310,18 +320,19 @@ class TvConsole(object):
                     self.interactiveLine = self.inputPending
                 if oldIndex != self.historyIndex:
                     self.cursor = len(self.interactiveLine)
-                
-                
+        
         elif event.keyval == 65361: # left
             with self.ipLock:
                 self.cursor -= 1
                 if self.cursor < 0:
                     self.cursor = 0
+        
         elif event.keyval == 65363: # right
             with self.ipLock:
                 self.cursor += 1
                 if self.cursor > len(self.interactiveLine):
                     self.cursor = len(self.interactiveLine)
+        
         elif event.keyval == 65288: #backspace
             with self.ipLock:
                 if self.cursor > 0:
@@ -329,6 +340,7 @@ class TvConsole(object):
                     self.cursor -= 1
                     if self.historyIndex < len(self.history):
                         self.historyModified[self.historyIndex] = self.interactiveLine
+        
         elif event.keyval == 65289: #tab
             event.keyval = ord('\t')
             string = '\t'
@@ -343,7 +355,6 @@ class TvConsole(object):
                     self.historyModified[self.historyIndex] = self.interactiveLine
                 else:
                     self.inputPending = self.interactiveLine
-        
         
         self.setInteractiveLine(self.interactiveLine)
         
@@ -404,7 +415,7 @@ class TvConsole(object):
         while not self.EOF or (sizehint and len(lines) < sizehint):
             lines.append(self.readline())
         return lines
-        
+    
     def write(self,string):
         #sys.__stdout__.write('write: ' + string + '\n')
         if self.guiThread and self.guiThread != currentThread():
@@ -458,7 +469,6 @@ class TvConsole(object):
         if writeEvt:
             writeEvt.set()
         return False
-            
     
     def scrollCallback(self,widget,data=None):
         if self.scrollToEnd:
@@ -504,8 +514,12 @@ class TvConsole(object):
         function(*args)
         
     def sendSigint(self):
-        os.kill(os.getpid(),signal.SIGINT)
-        
+        if kernel32:
+            kernel32.GenerateConsoleCtrlEvent(CTRL_C_EVENT,0)
+        else:
+            os.kill(os.getpid(),signal.SIGINT)
+
+
 class Gui(object):
     def delete_evt(self,widget,event,data=None):
         # False -> destroy window
@@ -513,7 +527,7 @@ class Gui(object):
         return False
         
     def destroy_sig(self,widget,data=None):
-        gtk.main_quit()
+        self.runMain = False
         
     def __init__(self):
         global environment
@@ -527,7 +541,6 @@ class Gui(object):
         self.hpane = gtk.HPaned()
         
         self.vpane = gtk.VPaned()
-        
         
         self.lm = gtksourceview2.LanguageManager()
         
@@ -596,15 +609,11 @@ class Gui(object):
         #self.codeSw.set_size_request(300,600)
         self.console.sw.set_size_request(800,600)
         
+        self.runMain = True
+        
         #for obj in [self.graphics,self.console.tv,self.console.sw,self.codeTv,self.codeSw,self.vpane,self.hpane,self.window]:
         #    obj.show()
         self.window.show_all()
-        
-        
-        if sys.platform=='win32':
-            gobject.timeout_add(400,self.sleeper)
-        else:
-            gtk.gdk.threads_init()
         
         #colormap = self.canvas.get_colormap()
         
@@ -616,11 +625,7 @@ class Gui(object):
         #self.gc.set_foreground(white)
         #self.canvas.draw_rectangle(self.gc, True,0,0,20,20)
         #self.gc.set_foreground(black)
-        
-#        Thread(target=self.main,args=()).start()
-        
-        
-        
+    
     def save_code(self):
         b = self.codeTv.get_buffer()
         source = b.get_text(*(b.get_bounds()))
@@ -638,6 +643,7 @@ class Gui(object):
     def sleeper(self):
         time.sleep(.001)
         return 1
+    
     def configure_graphics(self, widget, event):
         
         x,y,w,h = widget.get_allocation()
@@ -665,18 +671,46 @@ class Gui(object):
     
     def main(self):
         self.console.guiThread=currentThread()
-        gtk.main()
+        self.runMain = True
+        while self.runMain:
+            try:
+                with gtk.gdk.lock:
+                    while gtk.events_pending():
+                        gtk.main_iteration()
+                    time.sleep(.001)
+            except KeyboardInterrupt as e:
+                pass
 
+
+gui = None
+
+guiReady = Event()
+guiReady.clear()
+
+def makeGui(runGui=True):
+    global gui
+    gui = Gui()
+    
+    guiReady.set()
+    
+    if runGui:
+        gui.main()
 
 def main(consoleMain=True):
-    gui = Gui()
+    
+    if not kernel32:
+        gtk.gdk.threads_init()
+    
     try:
         if consoleMain:
-            Thread(target=gui.main,args=()).start()
+            Thread(target=makeGui,args=()).start()
+            guiReady.wait()
             gui.console.start(True)
         else:
+            makeGui(False)
             gui.console.start()
             gui.main()
+    
     except Exception as e:
         traceback.print_exc()
     except KeyboardInterrupt as e:
@@ -684,5 +718,4 @@ def main(consoleMain=True):
     return gui
 
 if __name__ == '__main__':
-    gui = Gui()
-    gui.main()
+    main()
