@@ -2,7 +2,7 @@
 
 import code, sys, pdb, ctypes, copy, time, os, signal, traceback
 
-from threading import Thread, Event, Lock, currentThread, enumerate
+from threading import Thread, Event, Lock, currentThread
 from math import pi,atan2,sin,cos
 
 import pygtk
@@ -134,12 +134,13 @@ class TvConsole(object):
         self.ps2 = (sys.ps2 if hasattr(sys,'ps2') else '... ')
         self.plen = 0
         self.cursorOn = True
+        self.running = Event()
+        self.running.clear()
     
     def start(self,main=True):
         
         gobject.timeout_add(600,self.toggleCursor)
         
-        self.running = True
         if main:
             self.readLoopThread = currentThread()
             self.readLoop()
@@ -150,14 +151,16 @@ class TvConsole(object):
     def setLocals(self,locals):
         self.i2.locals.update(locals)
     
-    def stopReadLoop(self,widget,data=None):
-        self.running = False
+    def stopReadLoop(self, *args):
+        self.running.clear()
+        self.sendSigint()
         self.inputReady.set()
-        sys.stdin=sys.__stdin__
-        sys.stdout=sys.__stdout__
-        sys.stderr=sys.__stderr__
     
     def readLoop(self):
+        self.running.set() # This Event triggers the gtk main loop to 
+                           # start, which must happen before the 
+                           # blocking write below can succeed.
+        
         self.write('Robo Interacive Python Interpreter\n' +
                     sys.version + ' on ' + sys.platform + 
                     '\nType "help", "copyright", "credits" or "license" for more information.\n')
@@ -165,7 +168,7 @@ class TvConsole(object):
         self.cursor = 0
         gobject.idle_add(self.setInteractiveLine,'')
         
-        while self.running:
+        while self.running.isSet():
             try:
                 self.inputWaiting.set()
                 self.inputReady.wait()
@@ -205,7 +208,7 @@ class TvConsole(object):
                     self.historyModified.pop(self.historyIndex)
                 self.historyIndex = len(self.history)
                 
-        if input != None and self.running:
+        if input != None and self.running.isSet():
             
             incomplete = self.executeInput(input)
                     
@@ -508,8 +511,6 @@ class TvConsole(object):
             string = self.prompt + string
             self.plen = len(self.prompt)
             
-#            print >>sys.__stdout__, 'interactiveLine:', repr(string)
-            
             if string.endswith('\n'):
                 self.plen = 0
             self.buffer.insert(end,string+' ') # blank space for cursor at EOL
@@ -523,8 +524,6 @@ class TvConsole(object):
         return False
     
     def updateCursor(self, clear=True):
-        
-#        print >>sys.__stdout__, repr(self.prompt)
         
         if clear or not self.cursorOn:
             self.buffer.remove_all_tags(self.buffer.get_start_iter(), self.buffer.get_end_iter())
@@ -555,14 +554,10 @@ class Gui(object):
         # True -> dont destroy window
         return False
         
-    def destroy_sig(self,widget,data=None):
-        self.runMain = False
-        
     def __init__(self):
         global environment
         
         self.window = gtk.Window(gtk.WINDOW_TOPLEVEL)
-        self.window.connect("destroy", self.destroy_sig)
         self.window.connect("delete_event", self.delete_evt)
         self.window.set_title("Robo")
         self.window.set_size_request(800, 600)
@@ -638,8 +633,6 @@ class Gui(object):
         #self.codeSw.set_size_request(300,600)
         self.console.sw.set_size_request(800,600)
         
-        self.runMain = True
-        
         self.window.show_all()
     
     def save_code(self):
@@ -680,14 +673,11 @@ class Gui(object):
         widget.window.draw_drawable(widget.get_style().fg_gc[gtk.STATE_NORMAL],self.canvas, x, y, x, y, w, h)
         return False
     
-    def main(self, guiReady=None):
-        self.console.guiThread=currentThread()
+    def main(self):
+        self.console.running.wait() # console.readLoopThread must be set
+                                    # correctly before proceeding.
         
-        if guiReady:
-            guiReady.set()
-        
-        self.runMain = True
-        while self.runMain:
+        while self.console.readLoopThread.isAlive():
             try:
                 with gtk.gdk.lock:
                     while gtk.events_pending():
@@ -700,12 +690,17 @@ class Gui(object):
 gui = None
 
 
-def makeGui(runGui=True, guiReady=None):
+def makeGui(guiReady=None, runGui=True):
     global gui
     gui = Gui()
     
+    gui.console.guiThread=currentThread()
+    
+    if guiReady:
+        guiReady.set()
+    
     if runGui:
-        gui.main(guiReady)
+        gui.main()
 
 def main(consoleMain=True):
         
@@ -717,12 +712,14 @@ def main(consoleMain=True):
     
     try:
         if consoleMain:
-            Thread(target=makeGui,kwargs={'guiReady': guiReady}).start()
-            guiReady.wait()
-            gui.console.start()
+            Thread(target=makeGui,args=(guiReady,)).start()
         else:
-            makeGui(False)
-            gui.console.start(False)
+            makeGui(guiReady, False)
+        
+        guiReady.wait() # gui thread must fully initialize console component
+        gui.console.start(consoleMain)
+        
+        if not consoleMain:
             gui.main()
     
     except Exception as e:
