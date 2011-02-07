@@ -97,21 +97,24 @@ class TvConsole(object):
         self.tv = gtk.TextView(buffer=None)
         self.tv.set_wrap_mode(gtk.WRAP_WORD)
         self.tv.set_editable(False)
-        self.tv.connect("destroy", self.stopReadLoop)
         
         self.sw = gtk.ScrolledWindow(hadjustment=None, vadjustment=None)
         self.sw.set_policy(gtk.POLICY_AUTOMATIC, gtk.POLICY_AUTOMATIC)
-        self.sw.add_with_viewport(self.tv)
+        self.sw.add(self.tv)
         
         self.tv.add_events(gtk.gdk.KEY_PRESS)
         self.tv.connect('key_press_event',self.keyCallback)
+        self.tv.connect('paste-clipboard', self.pasteCallback)
+        self.tv.connect_after('populate-popup', self.popupCallback)
+        self.tv.connect('destroy', self.stopReadLoop)
         self.tv.set_cursor_visible(False)
         
         self.buffer = self.tv.get_buffer()
         self.vadj = self.sw.get_vadjustment()
         
         self.scrollToEnd = True;
-        self.sw.connect_after('size-allocate', self.scrollCallback)
+        self.sw.connect_after('size-allocate', self.sizeCallback)
+        self.vadj.connect('value-changed', self.scrollCallback)
         self.blockCursor = self.buffer.create_tag('cursor', background='black',foreground='white')
         
         self.pendingCR = False
@@ -136,6 +139,12 @@ class TvConsole(object):
         self.cursorOn = True
         self.running = Event()
         self.running.clear()
+    
+    
+    def setupAccelerators(self):
+        ag = gtk.AccelGroup()
+        self.tv.get_toplevel().add_accel_group(ag)
+        self.tv.add_accelerator('paste-clipboard', ag, ord('v'), gtk.gdk.CONTROL_MASK, 0)
     
     def start(self,main=True):
         
@@ -180,6 +189,9 @@ class TvConsole(object):
                     self.inputReady.clear()
                     self.inputPending = ''
                     self.interactiveLine = self.inputPending
+                    if self.historyIndex in self.historyModified:
+                        del self.historyModified[self.historyIndex]
+                    self.historyIndex = len(self.history)
                 
                 self.incomplete=[]
                 self.prompt = self.ps1
@@ -201,13 +213,8 @@ class TvConsole(object):
                 input = self.inputPending
                 self.inputPending = ''
                 
-                if (not self.history or self.history[-1] != input.rstrip()) and input.rstrip():
-                    self.history.append(input.rstrip())
-                
-                if self.historyIndex in self.historyModified:
-                    self.historyModified.pop(self.historyIndex)
-                self.historyIndex = len(self.history)
-                
+                self.updateHistory(input)
+        
         if input != None and self.running.isSet():
             
             incomplete = self.executeInput(input)
@@ -262,6 +269,7 @@ class TvConsole(object):
             sys.stdout = sys.__stdout__
             sys.stdin = sys.__stdin__
             self.EOF = False
+            self.softspace = 0
         return incomplete
     
     def getCode(self,sourceReady):
@@ -278,19 +286,22 @@ class TvConsole(object):
         self.setInteractiveLine(self.interactiveLine)
         self.interactiveLine = ''
         self.prompt = ''
+        self.scrollToEnd = True
+        self.autoScroll()
         self.inputReady.set()
     
     def keyCallback(self,widget,event,data=None):
+        
+        string=''
         
         if event.string == '\r':
             self.doEntry()
             return True
         
         elif event.state & gtk.gdk.CONTROL_MASK:
-            if(event.keyval == ord('c') or event.keyval == ord('C')):
+            if event.keyval == ord('c') or event.keyval == ord('C'):
                 if event.state & gtk.gdk.SHIFT_MASK:
                     event.state &= ~gtk.gdk.SHIFT_MASK
-                    return False
                 else:
                     with self.ipLock:
                         self.interactiveLine += '^C\n'
@@ -298,16 +309,22 @@ class TvConsole(object):
                     self.setInteractiveLine(self.interactiveLine)
                     self.interactiveLine = ''
                     self.prompt = ''
+                    self.scrollToEnd = True
+                    self.autoScroll()
                     self.sendSigint()
                     self.inputReady.set()
                     return True
             
-            if(event.keyval == ord('d') or event.keyval == ord('D')):
+            if event.keyval == ord('d') or event.keyval == ord('D'):
                 self.EOF = True
                 self.doEntry()
                 return True
             
-            string=''
+            if event.keyval == ord('v') or event.keyval == ord('V'):
+                if event.state & gtk.gdk.SHIFT_MASK:
+                    event.state &= ~gtk.gdk.SHIFT_MASK
+            
+            return False
         
         elif event.keyval == 65362: # up
             with self.ipLock:
@@ -322,8 +339,10 @@ class TvConsole(object):
                     
                     self.cursor = len(self.interactiveLine)
                     self.cursorOn = True
-                    # flow through to setInteractive line at the end of this block
+                    event.keyval = 0 # flow through to setInteractive line at the end of this block
                 else:
+                    self.scrollToEnd = True
+                    self.autoScroll()
                     return True
         
         elif event.keyval == 65364: # down
@@ -342,8 +361,10 @@ class TvConsole(object):
                 
                     self.cursor = len(self.interactiveLine)
                     self.cursorOn = True
-                    # flow through to setInteractive line at the end of this block
+                    event.keyval = 0 # flow through to setInteractive line at the end of this block
                 else:
+                    self.scrollToEnd = True
+                    self.autoScroll()
                     return True
         
         elif event.keyval == 65361: # left
@@ -352,6 +373,8 @@ class TvConsole(object):
                     self.cursor -= 1
                     self.cursorOn = True
                     self.updateCursor()
+            self.scrollToEnd = True
+            self.autoScroll()
             return True
         
         elif event.keyval == 65363: # right
@@ -360,6 +383,8 @@ class TvConsole(object):
                     self.cursor += 1
                     self.cursorOn = True
                     self.updateCursor()
+            self.scrollToEnd = True
+            self.autoScroll()
             return True
         
         elif event.keyval == 65288: #backspace
@@ -371,8 +396,10 @@ class TvConsole(object):
                         self.historyModified[self.historyIndex] = self.interactiveLine
                     self.cursorOn = True
                     self.updateCursor()
-                    # flow through to setInteractive line at the end of this block
+                    event.keyval = 0 # flow through to setInteractive line at the end of this block
                 else:
+                    self.scrollToEnd = True  
+                    self.autoScroll()
                     return True
         
         elif event.keyval == 65289: #tab
@@ -380,19 +407,48 @@ class TvConsole(object):
             string = '\t'
         else:
             string = event.string
-                
-        if event.keyval < 256:
-            with self.ipLock:
-                self.interactiveLine = self.interactiveLine[:self.cursor] + string + self.interactiveLine[self.cursor:]
-                self.cursor += len(string)
-                if self.historyIndex < len(self.history):
-                    self.historyModified[self.historyIndex] = self.interactiveLine
-                else:
-                    self.inputPending = self.interactiveLine
         
-        self.setInteractiveLine(self.interactiveLine)
+        if event.keyval < 256:
+            if string:
+                self.insertText(string)
+            self.setInteractiveLine(self.interactiveLine)
+            self.scrollToEnd = True
+            self.autoScroll()
         
         return True
+    
+    def insertText(self,string):
+        with self.ipLock:
+            self.interactiveLine = self.interactiveLine[:self.cursor] + string + self.interactiveLine[self.cursor:]
+            self.cursor += len(string)
+            if self.historyIndex < len(self.history):
+                self.historyModified[self.historyIndex] = self.interactiveLine
+            else:
+                self.inputPending = self.interactiveLine
+    
+    def pasteCallback(self,widget):
+        clip = gtk.Clipboard()
+        data = clip.wait_for_contents(gtk.gdk.TARGET_STRING)
+        text = data.get_text()
+        self.insertText(text)
+        self.setInteractiveLine(self.interactiveLine)
+        return False
+    
+    def popupCallback(self,widget, menu):
+        clip = gtk.Clipboard()
+        if clip.wait_is_target_available(gtk.gdk.TARGET_STRING):
+            self.menu = menu
+            for child in menu.get_children():
+                if child.get_label() == 'gtk-paste':
+                    child.set_sensitive(True)
+    
+    def updateHistory(self, input):
+        if (not self.history or self.history[-1] != input.rstrip()) and input.rstrip():
+            self.history.append(input.rstrip())
+        
+        if self.historyIndex in self.historyModified:
+            del self.historyModified[self.historyIndex]
+        self.historyIndex = len(self.history)    
     
     def read(self,size=-1):
         
@@ -413,6 +469,7 @@ class TvConsole(object):
                 else:
                     input = self.inputPending
                     self.inputPending = ''
+                self.updateHistory(input)
         
         return input
     
@@ -438,7 +495,7 @@ class TvConsole(object):
             self.insertEnd(string)
         else:
             writeEvt=Event()
-            gobject.idle_add(self.insertEnd,string,writeEvt)
+            gobject.idle_add(self.insertEnd, string, writeEvt, priority = gobject.PRIORITY_HIGH)
             writeEvt.wait()
     
     def flush():
@@ -487,14 +544,22 @@ class TvConsole(object):
             self.buffer.insert(iter,' ') # blank space for cursor at EOL
             
         self.updateCursor()
+        self.autoScroll()
         if writeEvt:
             writeEvt.set()
         return False
     
-    def scrollCallback(self,widget,data=None):
+    def scrollCallback(self, adj):
+        self.scrollToEnd =  adj.get_value() == adj.get_upper()-adj.get_page_size()
+    
+    def sizeCallback(self,widget,data=None):
+        # called when the number of lines in the textView changes
+        self.autoScroll()
+        return False
+    
+    def autoScroll(self):
         if self.scrollToEnd:
             self.vadj.set_value(self.vadj.get_upper()-self.vadj.get_page_size())
-        return False
     
     def setInteractiveLine(self,string,writeEvt=None):
         with self.textLock:
@@ -627,6 +692,7 @@ class Gui(object):
         self.vpane.add1(self.graphics)
         
         self.window.add(self.hpane)
+        self.console.setupAccelerators()
         
         #self.graphics.set_size_request(500,400)
         #self.console.sw.set_size_request(500,200)
@@ -681,7 +747,7 @@ class Gui(object):
             try:
                 with gtk.gdk.lock:
                     while gtk.events_pending():
-                        gtk.main_iteration()
+                        gtk.main_iteration(False)
                     time.sleep(.001)
             except KeyboardInterrupt as e:
                 pass
