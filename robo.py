@@ -20,6 +20,9 @@ if sys.platform == 'win32':
 else:
     kernel32 = None
 
+if not os.getcwd() in sys.path:
+    sys.path = [os.getcwd()] + sys.path
+    
 class Robot(object):
     def __init__(self,x=0,y=0,heading=0):
         global environment
@@ -86,6 +89,7 @@ class TvConsole(object):
         self.inputPending = ''
         self.ipLock = Lock()
         self.interactiveLine = ''
+        self.prompt = ''
         self.history = []
         self.historyIndex = 0
         self.historyModified = {}
@@ -104,9 +108,9 @@ class TvConsole(object):
         
         self.tv.add_events(gtk.gdk.KEY_PRESS)
         self.tv.connect('key_press_event',self.keyCallback)
-        self.tv.connect('paste-clipboard', self.pasteCallback)
+        self.tv.connect_after('paste-clipboard', self.pasteCallback)
         self.tv.connect_after('populate-popup', self.popupCallback)
-        self.tv.connect('destroy', self.stopReadLoop)
+        self.tv.connect('destroy', self.stopInteracting)
         self.tv.set_cursor_visible(False)
         
         self.buffer = self.tv.get_buffer()
@@ -118,6 +122,7 @@ class TvConsole(object):
         self.blockCursor = self.buffer.create_tag('cursor', background='black',foreground='white')
         
         self.pendingCR = False
+        self.pendingWrites=[]
         
         mono = pango.FontDescription('monospace 10')
         if mono:
@@ -151,27 +156,27 @@ class TvConsole(object):
         gobject.timeout_add(600,self.toggleCursor)
         
         if main:
-            self.readLoopThread = currentThread()
-            self.readLoop()
+            self.interactiveThread = currentThread()
+            self.interact()
         else:
-            self.readLoopThread = Thread(target=self.readLoop,args=())
-            self.readLoopThread.start()
+            self.interactiveThread = Thread(target=self.interact,args=())
+            self.interactiveThread.start()
     
     def setLocals(self,locals):
         self.i2.locals.update(locals)
     
-    def stopReadLoop(self, *args):
+    def stopInteracting(self, *args):
         self.running.clear()
         self.sendSigint()
         self.inputReady.set()
     
-    def readLoop(self):
+    def interact(self):
         self.running.set() # This Event triggers the gtk main loop to 
                            # start, which must happen before the 
                            # blocking write below can succeed.
         
         self.write('Robo Interacive Python Interpreter\n' +
-                    sys.version + ' on ' + sys.platform + 
+                    'Python ' + sys.version + ' on ' + sys.platform + 
                     '\nType "help", "copyright", "credits" or "license" for more information.\n')
         self.prompt = self.ps1
         self.cursor = 0
@@ -250,24 +255,27 @@ class TvConsole(object):
          self.incomplete[0].startswith('class'))):
             incomplete = True
         else:
-            if self.getSource:
-                source = self.getSource()
-                sys.stdin = self
-                sys.stdout = self
-                sys.stderr = self
-                try:
-                    code = compile(source,'<code area>','exec')
-                    self.i2.runcode(code)
-                except SyntaxError as e:
-                    self.i2.showsyntaxerror('<code area>')
-            else:
-                sys.stdin = self
-                sys.stdout = self
-                sys.stderr = self
-            incomplete = self.i2.runsource(command,'<stdin>','single')
-            sys.stderr = sys.__stderr__
-            sys.stdout = sys.__stdout__
-            sys.stdin = sys.__stdin__
+            try:
+                if self.getSource:
+                    source = self.getSource()
+                    sys.stdin = self
+                    sys.stdout = self
+                    sys.stderr = self
+                    try:
+                        code = compile(source,'<code area>','exec')
+                        self.i2.runcode(code)
+                    except SyntaxError as e:
+                        self.i2.showsyntaxerror('<code area>')
+                else:
+                    sys.stdin = self
+                    sys.stdout = self
+                    sys.stderr = self
+                incomplete = self.i2.runsource(command,'<stdin>','single')
+            finally:
+                sys.stderr = sys.__stderr__
+                sys.stdout = sys.__stdout__
+                sys.stdin = sys.__stdin__
+            
             self.EOF = False
             self.softspace = 0
         return incomplete
@@ -410,14 +418,14 @@ class TvConsole(object):
         
         if event.keyval < 256:
             if string:
-                self.insertText(string)
+                self.insertAtCursor(string)
             self.setInteractiveLine(self.interactiveLine)
             self.scrollToEnd = True
             self.autoScroll()
         
         return True
     
-    def insertText(self,string):
+    def insertAtCursor(self,string):
         with self.ipLock:
             self.interactiveLine = self.interactiveLine[:self.cursor] + string + self.interactiveLine[self.cursor:]
             self.cursor += len(string)
@@ -428,15 +436,17 @@ class TvConsole(object):
     
     def pasteCallback(self,widget):
         clip = gtk.Clipboard()
-        data = clip.wait_for_contents(gtk.gdk.TARGET_STRING)
-        text = data.get_text()
-        self.insertText(text)
-        self.setInteractiveLine(self.interactiveLine)
+        text = clip.wait_for_text()
+        
+        if text:
+            self.insertAtCursor(text)
+            self.setInteractiveLine(self.interactiveLine)
+        
         return False
     
     def popupCallback(self,widget, menu):
         clip = gtk.Clipboard()
-        if clip.wait_is_target_available(gtk.gdk.TARGET_STRING):
+        if clip.wait_is_text_available():
             self.menu = menu
             for child in menu.get_children():
                 if child.get_label() == 'gtk-paste':
@@ -490,16 +500,23 @@ class TvConsole(object):
         
         return lines
     
-    def write(self,string):
+    def write(self, string, blocking=False):
         if self.guiThread == currentThread():
             self.insertEnd(string)
         else:
             writeEvt=Event()
             gobject.idle_add(self.insertEnd, string, writeEvt, priority = gobject.PRIORITY_HIGH)
-            writeEvt.wait()
+            if blocking:
+                writeEvt.wait()
+            else:
+                self.pendingWrites.append(writeEvt)
+        self.prompt = (self.prompt + string).split('\n')[-1].split('\r')[-1]
+        self.plen = len(self.prompt)
     
-    def flush():
-        pass
+    def flush(self):
+        if self.guiThread != currentThread():
+            while self.pendingWrites:
+                self.pendingWrites.pop(0).wait()
     
     def insertEnd(self,string,writeEvt=None):
         with self.textLock:
@@ -509,7 +526,7 @@ class TvConsole(object):
                 
             if string.endswith('\r'):
                 self.pendingCR = True
-                string.rstrip('\r')
+                string = string.rstrip('\r')
             else:
                 self.pendingCR = False
             
@@ -536,10 +553,6 @@ class TvConsole(object):
                 else:
                     self.buffer.insert(iter,elements[i])
             
-            lineStart = iter.copy()
-            lineStart.set_line_offset(0)
-            self.prompt = self.buffer.get_text(lineStart,iter)
-            self.plen = len(self.prompt)
             self.cursor = 0;
             self.buffer.insert(iter,' ') # blank space for cursor at EOL
             
@@ -740,16 +753,16 @@ class Gui(object):
         return False
     
     def main(self):
-        self.console.running.wait() # console.readLoopThread must be set
+        self.console.running.wait() # console.interactiveThread must be set
                                     # correctly before proceeding.
         
-        while self.console.readLoopThread.isAlive():
+        while self.console.interactiveThread.isAlive():
             try:
                 with gtk.gdk.lock:
                     while gtk.events_pending():
                         gtk.main_iteration(False)
                     time.sleep(.001)
-            except KeyboardInterrupt as e:
+            except:
                 pass
 
 
