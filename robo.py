@@ -2,7 +2,7 @@
 
 import code, sys, pdb, ctypes, copy, time, os, signal, traceback
 
-from threading import Thread, Event, Lock, currentThread
+from threading import Thread, Event, RLock, currentThread
 from math import pi,atan2,sin,cos
 
 import pygtk
@@ -87,9 +87,11 @@ class TvConsole(object):
         self.inputReady = Event()
         self.inputWaiting = Event()
         self.inputPending = ''
-        self.ipLock = Lock()
+        self.inputQueue = []
+        self.ipLock = RLock()
         self.interactiveLine = ''
         self.prompt = ''
+        self.plen = len(self.prompt)
         self.history = []
         self.historyIndex = 0
         self.historyModified = {}
@@ -108,7 +110,7 @@ class TvConsole(object):
         
         self.tv.add_events(gtk.gdk.KEY_PRESS)
         self.tv.connect('key_press_event',self.keyCallback)
-        self.tv.connect_after('paste-clipboard', self.pasteCallback)
+        self.tv.connect('paste-clipboard', self.pasteCallback)
         self.tv.connect_after('populate-popup', self.popupCallback)
         self.tv.connect('destroy', self.stopInteracting)
         self.tv.set_cursor_visible(False)
@@ -129,7 +131,7 @@ class TvConsole(object):
             self.tv.modify_font(mono)
         
         self.text=''
-        self.textLock=Lock()
+        self.textLock=RLock()
         
         self.i2 = code.InteractiveInterpreter()
         self.i2.write = self.write
@@ -138,9 +140,11 @@ class TvConsole(object):
         
         self.getSource = getSource
         
-        self.ps1 = (sys.ps1 if hasattr(sys,'ps1') else '>>> ')
-        self.ps2 = (sys.ps2 if hasattr(sys,'ps2') else '... ')
-        self.plen = 0
+        if not hasattr(sys,'ps1'):
+            sys.ps1 = '>>> '
+        if not hasattr(sys,'ps2'):
+            sys.ps2 =  '... '
+        
         self.cursorOn = True
         self.running = Event()
         self.running.clear()
@@ -178,28 +182,28 @@ class TvConsole(object):
         self.write('Robo Interacive Python Interpreter\n' +
                     'Python ' + sys.version + ' on ' + sys.platform + 
                     '\nType "help", "copyright", "credits" or "license" for more information.\n')
-        self.prompt = self.ps1
+        self.flush()
+        self.prompt = sys.ps1
         self.cursor = 0
         gobject.idle_add(self.setInteractiveLine,'')
         
         while self.running.isSet():
             try:
                 self.inputWaiting.set()
-                self.inputReady.wait()
+                
+                if not self.inputQueue:
+                    self.inputReady.wait()
+                
                 self.processInput()
             
             except KeyboardInterrupt:
                 self.write('KeyboardInterrupt\n')
+                self.flush()
                 with self.ipLock:
                     self.inputReady.clear()
-                    self.inputPending = ''
-                    self.interactiveLine = self.inputPending
-                    if self.historyIndex in self.historyModified:
-                        del self.historyModified[self.historyIndex]
-                    self.historyIndex = len(self.history)
                 
                 self.incomplete=[]
-                self.prompt = self.ps1
+                self.prompt = sys.ps1
                 
                 setEvt=Event()
                 gobject.idle_add(self.setInteractiveLine,self.interactiveLine, setEvt)
@@ -212,33 +216,41 @@ class TvConsole(object):
         with self.ipLock:
             input = None
             self.inputWaiting.clear()
-            if self.inputReady.isSet():
+            self.prompt = ''
+            preSetLine=Event()
+            gobject.idle_add(self.setInteractiveLine,self.interactiveLine,preSetLine)
+            preSetLine.wait()
+            
+            if self.inputQueue:
                 
                 self.inputReady.clear()
-                input = self.inputPending
-                self.inputPending = ''
-                
-                self.updateHistory(input)
+                input = self.inputQueue.pop(0)
         
         if input != None and self.running.isSet():
             
             incomplete = self.executeInput(input)
-                    
+            
+            self.flush()
             if incomplete:
                 self.incomplete.append(input)
-                self.prompt = self.ps2
+                self.prompt = sys.ps2
             else:
                 self.incomplete=[]
-                self.prompt = self.ps1
+                self.prompt = sys.ps1
             
             with self.ipLock:
-                if not self.inputPending.rstrip('\n'):
-                    self.inputReady.clear()
-                    self.inputPending=''
+                while self.inputQueue and not self.inputQueue[0].rstrip('\n'):
+                    del self.inputQueue[0]
                 
-            setEvt=Event()
-            gobject.idle_add(self.setInteractiveLine,self.interactiveLine,setEvt)
-            setEvt.wait()
+                if self.inputQueue:
+                    nextLine = self.inputQueue[0]
+                else:
+                    self.inputReady.clear()
+                    nextLine = self.interactiveLine
+            
+            postSetLine=Event()
+            gobject.idle_add(self.setInteractiveLine,nextLine,postSetLine)
+            postSetLine.wait()
     
     def executeInput(self,input):
         
@@ -287,13 +299,15 @@ class TvConsole(object):
     def doEntry(self):
         with self.ipLock:
             self.interactiveLine += '\n'
-            self.inputPending = self.interactiveLine
+            self.inputQueue.append(self.interactiveLine)
+            self.updateHistory(self.interactiveLine)
         
         self.cursor = 0
         self.cursorOn = True
         self.setInteractiveLine(self.interactiveLine)
         self.interactiveLine = ''
         self.prompt = ''
+        self.inputPending = ''
         self.scrollToEnd = True
         self.autoScroll()
         self.inputReady.set()
@@ -314,6 +328,11 @@ class TvConsole(object):
                     with self.ipLock:
                         self.interactiveLine += '^C\n'
                         self.inputPending = ''
+                        self.inputQueue = []
+                        if self.historyIndex in self.historyModified:
+                            del self.historyModified[self.historyIndex]
+                        self.historyIndex = len(self.history)
+                    
                     self.setInteractiveLine(self.interactiveLine)
                     self.interactiveLine = ''
                     self.prompt = ''
@@ -427,12 +446,21 @@ class TvConsole(object):
     
     def insertAtCursor(self,string):
         with self.ipLock:
-            self.interactiveLine = self.interactiveLine[:self.cursor] + string + self.interactiveLine[self.cursor:]
-            self.cursor += len(string)
-            if self.historyIndex < len(self.history):
-                self.historyModified[self.historyIndex] = self.interactiveLine
-            else:
-                self.inputPending = self.interactiveLine
+            head = self.interactiveLine[:self.cursor]
+            tail = self.interactiveLine[self.cursor:]
+            text = head + string + tail
+            lines = text.split('\n')
+            while lines:
+                self.interactiveLine = lines.pop(0)
+                if self.historyIndex < len(self.history):
+                    self.historyModified[self.historyIndex] = self.interactiveLine
+                else:
+                    self.inputPending = self.interactiveLine
+                if lines:
+                    self.doEntry()
+                    
+                
+            self.cursor = len(self.interactiveLine)-len(tail)
     
     def pasteCallback(self,widget):
         clip = gtk.Clipboard()
@@ -467,19 +495,22 @@ class TvConsole(object):
         
         input = None
         self.inputWaiting.set()
-        self.inputReady.wait()
+        
+        if not self.inputQueue:
+            self.inputReady.wait()
+        
         with self.ipLock:
             self.inputWaiting.clear()
-            if self.inputReady.isSet():
+            if self.inputQueue:
                 self.inputReady.clear()
                 
                 if size > 0:
-                    input = self.inputPending[:size]
-                    self.inputPending = self.inputPending[size:]
+                    input = self.inputQueue[0][:size]
+                    self.inputQueue[0] = self.inputQueue[0][size:]
+                    if not self.inputQueue[0]:
+                        del self.inputQueue[0]
                 else:
-                    input = self.inputPending
-                    self.inputPending = ''
-                self.updateHistory(input)
+                    input = self.inputQueue.pop(0)
         
         return input
     
@@ -510,8 +541,6 @@ class TvConsole(object):
                 writeEvt.wait()
             else:
                 self.pendingWrites.append(writeEvt)
-        self.prompt = (self.prompt + string).split('\n')[-1].split('\r')[-1]
-        self.plen = len(self.prompt)
     
     def flush(self):
         if self.guiThread != currentThread():
@@ -539,6 +568,8 @@ class TvConsole(object):
                 if cr and (not elements or elements[-1] != cr):
                     elements.append(cr)
             
+            self.setInteractiveLine('')
+            
             end = self.buffer.get_end_iter()
             iter = end.copy()
             iter.backward_char()
@@ -553,8 +584,9 @@ class TvConsole(object):
                 else:
                     self.buffer.insert(iter,elements[i])
             
-            self.cursor = 0;
-            self.buffer.insert(iter,' ') # blank space for cursor at EOL
+            self.prompt = (self.prompt + string).split('\n')[-1].split('\r')[-1]
+            self.plen = len(self.prompt)
+            self.setInteractiveLine(self.interactiveLine)
             
         self.updateCursor()
         self.autoScroll()
