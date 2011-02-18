@@ -22,7 +22,7 @@ else:
 
 if not os.getcwd() in sys.path:
     sys.path = [os.getcwd()] + sys.path
-    
+
 class Robot(object):
     def __init__(self,x=0,y=0,heading=0):
         global environment
@@ -49,10 +49,10 @@ class Robot(object):
             self.environment.canvas.widget.queue_draw_area(*self.drawingBoundingBox())
         except:
             pass # probably there is no canvas to draw to right now
-        
+    
     def boundingBox(self):
         return self.x-self.xextent, self.y-self.yextent,self.x+self.xextent,self.y+self.yextent
-        
+    
     def drawingBoundingBox(self):    
         x1,y1,x2,y2 = self.boundingBox()
         w,h = self.getCanvas().get_size()
@@ -149,12 +149,6 @@ class TvConsole(object):
         self.running = Event()
         self.running.clear()
     
-    
-    def setupAccelerators(self):
-        ag = gtk.AccelGroup()
-        self.tv.get_toplevel().add_accel_group(ag)
-        self.tv.add_accelerator('paste-clipboard', ag, ord('v'), gtk.gdk.CONTROL_MASK, 0)
-    
     def start(self,main=True):
         
         gobject.timeout_add(600,self.toggleCursor)
@@ -239,7 +233,7 @@ class TvConsole(object):
                 self.prompt = sys.ps1
             
             with self.ipLock:
-                while self.inputQueue and not self.inputQueue[0].rstrip('\n'):
+                while self.inputQueue and not self.inputQueue[0]:
                     del self.inputQueue[0]
                 
                 if self.inputQueue:
@@ -254,42 +248,41 @@ class TvConsole(object):
     
     def executeInput(self,input):
         
-        command = ''.join(self.incomplete)+input
+        command = '\n'.join(self.incomplete+[input])
         
-        if not command.strip():
-            command = 'None'
+        source = None
+        if self.getSource:
+            source = self.getSource()
         
-        if (self.incomplete and
-         input != '\n' and
-        (self.incomplete[0].startswith('while') or 
-         self.incomplete[0].startswith('for') or 
-         self.incomplete[0].startswith('def') or
-         self.incomplete[0].startswith('class'))):
-            incomplete = True
-        else:
-            try:
-                if self.getSource:
-                    source = self.getSource()
-                    sys.stdin = self
-                    sys.stdout = self
-                    sys.stderr = self
-                    try:
-                        code = compile(source,'<code area>','exec')
-                        self.i2.runcode(code)
-                    except SyntaxError as e:
-                        self.i2.showsyntaxerror('<code area>')
-                else:
-                    sys.stdin = self
-                    sys.stdout = self
-                    sys.stderr = self
-                incomplete = self.i2.runsource(command,'<stdin>','single')
-            finally:
-                sys.stderr = sys.__stderr__
-                sys.stdout = sys.__stdout__
-                sys.stdin = sys.__stdin__
+        try:
+            sys.stdin = self
+            sys.stdout = self
+            sys.stderr = self
             
+            if source:
+                try:
+                    code = compile(source,'<code area>','exec')
+                    self.i2.runcode(code)
+                except (OverflowError, SyntaxError, ValueError) as e:
+                    self.i2.showsyntaxerror('<code area>')
+            
+            if not input:
+                try:
+                    compile(command+'\n','<stdin>','single')
+                except IndentationError as e:
+                    self.i2.showsyntaxerror('<stdin>')
+                    return False
+                except:
+                    pass
+            
+            incomplete = self.i2.runsource(command,'<stdin>','single')
+        finally:
+            sys.stderr = sys.__stderr__
+            sys.stdout = sys.__stdout__
+            sys.stdin = sys.__stdin__
             self.EOF = False
             self.softspace = 0
+        
         return incomplete
     
     def getCode(self,sourceReady):
@@ -298,9 +291,9 @@ class TvConsole(object):
     
     def doEntry(self):
         with self.ipLock:
-            self.interactiveLine += '\n'
             self.inputQueue.append(self.interactiveLine)
             self.updateHistory(self.interactiveLine)
+            self.interactiveLine += '\n'
         
         self.cursor = 0
         self.cursorOn = True
@@ -458,8 +451,7 @@ class TvConsole(object):
                     self.inputPending = self.interactiveLine
                 if lines:
                     self.doEntry()
-                    
-                
+            
             self.cursor = len(self.interactiveLine)-len(tail)
     
     def pasteCallback(self,widget):
@@ -481,8 +473,8 @@ class TvConsole(object):
                     child.set_sensitive(True)
     
     def updateHistory(self, input):
-        if (not self.history or self.history[-1] != input.rstrip()) and input.rstrip():
-            self.history.append(input.rstrip())
+        if (not self.history or self.history[-1] != input) and input:
+            self.history.append(input)
         
         if self.historyIndex in self.historyModified:
             del self.historyModified[self.historyIndex]
@@ -505,14 +497,14 @@ class TvConsole(object):
                 self.inputReady.clear()
                 
                 if size > 0:
-                    input = self.inputQueue[0][:size]
-                    self.inputQueue[0] = self.inputQueue[0][size:]
+                    input = self.inputQueue[0][:size-1]
+                    self.inputQueue[0] = self.inputQueue[0][size-1:]
                     if not self.inputQueue[0]:
                         del self.inputQueue[0]
                 else:
                     input = self.inputQueue.pop(0)
         
-        return input
+        return input+'\n'
     
     def readline(self,size=-1):
         return self.read(size)
@@ -552,7 +544,7 @@ class TvConsole(object):
             
             if self.pendingCR:
                 string = '\r' + string
-                
+            
             if string.endswith('\r'):
                 self.pendingCR = True
                 string = string.rstrip('\r')
@@ -587,7 +579,7 @@ class TvConsole(object):
             self.prompt = (self.prompt + string).split('\n')[-1].split('\r')[-1]
             self.plen = len(self.prompt)
             self.setInteractiveLine(self.interactiveLine)
-            
+        
         self.updateCursor()
         self.autoScroll()
         if writeEvt:
@@ -650,7 +642,7 @@ class TvConsole(object):
         self.cursorOn = not self.cursorOn
         self.updateCursor(False)
         return True;
-        
+    
     def sendSigint(self):
         if kernel32:
             kernel32.GenerateConsoleCtrlEvent(CTRL_C_EVENT,0)
@@ -663,7 +655,7 @@ class Gui(object):
         # False -> destroy window
         # True -> dont destroy window
         return False
-        
+    
     def __init__(self):
         global environment
         
@@ -737,7 +729,6 @@ class Gui(object):
         self.vpane.add1(self.graphics)
         
         self.window.add(self.hpane)
-        self.console.setupAccelerators()
         
         #self.graphics.set_size_request(500,400)
         #self.console.sw.set_size_request(500,200)
@@ -749,6 +740,8 @@ class Gui(object):
     def save_code(self):
         b = self.codeTv.get_buffer()
         source = b.get_text(*(b.get_bounds()))
+        if source[-1] != '\n':
+            source += '\n'
         f=open('source.py','w')
         f.write(source)
         f.close()
@@ -800,7 +793,6 @@ class Gui(object):
 
 gui = None
 
-
 def makeGui(guiReady=None, runGui=True):
     global gui
     gui = Gui()
@@ -814,7 +806,7 @@ def makeGui(guiReady=None, runGui=True):
         gui.main()
 
 def main(consoleMain=True):
-        
+    
     guiReady = Event()
     guiReady.clear()
     
