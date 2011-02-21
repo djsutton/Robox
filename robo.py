@@ -135,10 +135,14 @@ class TvConsole(object):
         
         self.i2 = code.InteractiveInterpreter()
         self.i2.write = self.write
+        self.i2.showtraceback = self.showtraceback
+        self.setLocals({'__name__':'__main__'})
         if locals:
             self.setLocals(locals)
         
         self.getSource = getSource
+        self.source=''
+        self.sourceLocals={}
         
         if not hasattr(sys,'ps1'):
             sys.ps1 = '>>> '
@@ -203,7 +207,7 @@ class TvConsole(object):
                 gobject.idle_add(self.setInteractiveLine,self.interactiveLine, setEvt)
                 setEvt.wait()
             
-            except Exception:
+            except:
                 traceback.print_exc()
     
     def processInput(self):
@@ -260,11 +264,29 @@ class TvConsole(object):
             sys.stderr = self
             
             if source:
+                self.source = source
                 try:
                     code = compile(source,'<code area>','exec')
-                    self.i2.runcode(code)
                 except (OverflowError, SyntaxError, ValueError) as e:
                     self.i2.showsyntaxerror('<code area>')
+                else:
+                    oldSourceLocals = self.sourceLocals.keys()
+                    
+                    self.sourceLocals.clear()
+                    try:
+                        exec code in self.sourceLocals
+                    except:
+                        self.i2.showtraceback()
+                    else:
+                        removedSourceLocals = list(set(oldSourceLocals) - set(self.sourceLocals.keys()))
+                        
+                        for key in removedSourceLocals:
+                            try:
+                                del self.i2.locals[key]
+                            except:
+                                traceback.print_exc(file=sys.__stdout__)
+                        
+                        self.setLocals(self.sourceLocals)
             
             if not input:
                 try:
@@ -284,6 +306,36 @@ class TvConsole(object):
             self.softspace = 0
         
         return incomplete
+    
+    def showtraceback(self):
+        """Display the exception that just occurred.
+        This code is based on the same function from code.InteractiveInterpreter
+        """
+        try:
+            type, value, tb = sys.exc_info()
+            sys.last_type = type
+            sys.last_value = value
+            sys.last_traceback = tb
+            tblist = traceback.extract_tb(tb)
+            
+            del tblist[0] # the first entry is the exec line from InteractiveInterpreter.runcode()
+            i = 0
+            while i < len(tblist):
+                filename, lineno, function, line = tblist[i]
+                if filename == '<code area>':
+                    line = self.source.split('\n')[lineno-1]
+                    tblist[i] = (filename, lineno, function, line)
+                if filename == __file__:
+                    del tblist[i:]
+                i += 1
+            
+            lines = traceback.format_list(tblist)
+            if lines:
+                lines.insert(0, "Traceback (most recent call last):\n")
+            lines.extend(traceback.format_exception_only(type, value))
+        finally:
+            tblist = tb = None
+        self.write(''.join(lines))
     
     def getCode(self,sourceReady):
         self.source = self.codeBuffer.get_text(*(self.codeBuffer.get_bounds()))
@@ -750,6 +802,7 @@ class Gui(object):
     def load_code(self,file='source.py'):
         f=open(file)
         text=f.read()
+        text = text.replace('\r\n','\n')
         f.close()
         return text
     
