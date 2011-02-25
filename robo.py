@@ -208,7 +208,7 @@ class TvConsole(object):
                 setEvt.wait()
             
             except:
-                traceback.print_exc()
+                traceback.print_exc(file=sys.__stdout__)
     
     def processInput(self):
         with self.ipLock:
@@ -336,10 +336,6 @@ class TvConsole(object):
         finally:
             tblist = tb = None
         self.write(''.join(lines))
-    
-    def getCode(self,sourceReady):
-        self.source = self.codeBuffer.get_text(*(self.codeBuffer.get_bounds()))
-        sourceReady.set()
     
     def doEntry(self):
         with self.ipLock:
@@ -581,6 +577,10 @@ class TvConsole(object):
         else:
             writeEvt=Event()
             gobject.idle_add(self.insertEnd, string, writeEvt, priority = gobject.PRIORITY_HIGH)
+            
+            while self.pendingWrites and self.pendingWrites[0].isSet():
+                del self.pendingWrites[0]
+            
             if blocking:
                 writeEvt.wait()
             else:
@@ -633,7 +633,6 @@ class TvConsole(object):
             self.setInteractiveLine(self.interactiveLine)
         
         self.updateCursor()
-        self.autoScroll()
         if writeEvt:
             writeEvt.set()
         return False
@@ -648,14 +647,12 @@ class TvConsole(object):
     
     def autoScroll(self):
         if self.scrollToEnd:
-            self.vadj.set_value(self.vadj.get_upper()-self.vadj.get_page_size())
+            value = self.vadj.get_upper()-self.vadj.get_page_size()
+            if self.vadj.get_value() != value:
+                self.vadj.set_value(value)
     
     def setInteractiveLine(self,string,writeEvt=None):
         with self.textLock:
-            bounds = self.buffer.get_selection_bounds()
-            
-            if bounds:
-                marks = list(self.buffer.create_mark(None,i) for i in bounds)
             end = self.buffer.get_end_iter()
             iter = self.buffer.get_end_iter()
             iter.set_line_offset(0)
@@ -669,9 +666,6 @@ class TvConsole(object):
                 self.plen = 0
             self.buffer.insert(end,string+' ') # blank space for cursor at EOL
             
-            if bounds:
-                bounds = tuple(self.buffer.get_iter_at_mark(m) for m in marks)
-                self.buffer.select_range(*bounds)
             self.updateCursor(False)
         if writeEvt:
             writeEvt.set()
@@ -711,7 +705,7 @@ class Gui(object):
     def __init__(self):
         global environment
         
-        self.window = gtk.Window(gtk.WINDOW_TOPLEVEL)
+        self.window = gtk.Window()
         self.window.connect("delete_event", self.delete_evt)
         self.window.set_title("Robo")
         self.window.set_size_request(800, 600)
@@ -736,7 +730,6 @@ class Gui(object):
         self.codeTv.set_indent_on_tab(True)
         self.codeTv.set_highlight_current_line(True)
         self.codeTv.set_auto_indent(True)
-        #self.codeTv.set_show_line_marks(True)
         self.codeTv.set_show_line_numbers(True)
         
         mono = pango.FontDescription('monospace 10')
@@ -751,16 +744,7 @@ class Gui(object):
         self.codeSw.set_policy(gtk.POLICY_AUTOMATIC, gtk.POLICY_AUTOMATIC)
         self.codeSw.add_with_viewport(self.codeTv)
         
-#        self.codeSw = scintilla.Scintilla()
-#        self.codeSw.SetLexerLanguage('python')
-        
-        try:
-            code=self.load_code()
-            self.codeTv.get_buffer().set_text(code)
-        except IOError:
-            pass
-        except Exception as e:
-            traceback.print_exc()
+        self.load_code(undoable = False)
         
         self.graphics = gtk.DrawingArea()
         self.graphics.connect("configure_event", self.configure_graphics)
@@ -782,9 +766,6 @@ class Gui(object):
         
         self.window.add(self.hpane)
         
-        #self.graphics.set_size_request(500,400)
-        #self.console.sw.set_size_request(500,200)
-        #self.codeSw.set_size_request(300,600)
         self.console.sw.set_size_request(800,600)
         
         self.window.show_all()
@@ -799,12 +780,34 @@ class Gui(object):
         f.close()
         return source
     
-    def load_code(self,file='source.py'):
-        f=open(file)
-        text=f.read()
-        text = text.replace('\r\n','\n')
-        f.close()
-        return text
+    def load_code(self,filename='source.py',undoable=True):
+        loadThread = Thread(target=self.asynchronus_load_code, name='Load-Code', args=(filename, undoable))
+        loadThread.daemon = True
+        loadThread.start()
+    
+    def asynchronus_load_code(self,filename='source.py',undoable=True):
+        try:
+            f=open(filename)
+            text=f.read()
+            f.close()
+        except IOError:
+            pass
+        except Exception as e:
+            traceback.print_exc(file=sys.__stdout__)
+        else:
+            text = text.replace('\r\n','\n')
+            gobject.idle_add(self.set_code, text, undoable)
+    
+    def set_code(self,code,undoable=True):
+        srcBuffer = self.codeTv.get_buffer()
+        
+        if not undoable:
+            srcBuffer.begin_not_undoable_action()
+        
+        srcBuffer.set_text(code)
+        
+        if not undoable:
+            srcBuffer.end_not_undoable_action()
     
     def configure_graphics(self, widget, event):
         
@@ -848,12 +851,12 @@ gui = None
 
 def makeGui(guiReady=None, runGui=True):
     global gui
-    gui = Gui()
-    
-    gui.console.guiThread=currentThread()
-    
-    if guiReady:
-        guiReady.set()
+    try:
+        gui = Gui()
+        gui.console.guiThread=currentThread()
+    finally:
+        if guiReady:
+            guiReady.set()
     
     if runGui:
         gui.main()
@@ -868,20 +871,22 @@ def main(consoleMain=True):
     
     try:
         if consoleMain:
-            Thread(target=makeGui,args=(guiReady,)).start()
+            Thread(target=makeGui, name="GUI-Thread", args=(guiReady,)).start()
         else:
             makeGui(guiReady, False)
         
         guiReady.wait() # gui thread must fully initialize console component
-        gui.console.start(consoleMain)
         
-        if not consoleMain:
-            gui.main()
+        if gui:
+            gui.console.start(consoleMain)
+        
+            if not consoleMain:
+                gui.main()
     
     except Exception as e:
-        traceback.print_exc()
+        traceback.print_exc(file=sys.__stdout__)
     except KeyboardInterrupt as e:
-        traceback.print_exc()
+        traceback.print_exc(file=sys.__stdout__)
     return gui
 
 if __name__ == '__main__':
