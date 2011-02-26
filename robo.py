@@ -109,7 +109,7 @@ class TvConsole(object):
         self.sw.add(self.tv)
         
         self.tv.add_events(gtk.gdk.KEY_PRESS)
-        self.tv.connect('key_press_event',self.keyCallback)
+        self.tv.connect('key-press-event',self.keyCallback)
         self.tv.connect('paste-clipboard', self.pasteCallback)
         self.tv.connect_after('populate-popup', self.popupCallback)
         self.tv.connect('destroy', self.stopInteracting)
@@ -519,6 +519,7 @@ class TvConsole(object):
             for child in menu.get_children():
                 if child.get_label() == 'gtk-paste':
                     child.set_sensitive(True)
+        return True
     
     def updateHistory(self, input):
         if (not self.history or self.history[-1] != input) and input:
@@ -614,6 +615,7 @@ class TvConsole(object):
             
             self.setInteractiveLine('')
             
+            # remove the trailing space for the cursor
             end = self.buffer.get_end_iter()
             iter = end.copy()
             iter.backward_char()
@@ -627,6 +629,8 @@ class TvConsole(object):
                         self.buffer.delete(iter, end)
                 else:
                     self.buffer.insert(iter,elements[i])
+            
+            self.buffer.remove_tag_by_name('cursor',*self.buffer.get_bounds())
             
             self.prompt = (self.prompt + string).split('\n')[-1].split('\r')[-1]
             self.plen = len(self.prompt)
@@ -643,13 +647,15 @@ class TvConsole(object):
     def sizeCallback(self,widget,data=None):
         # called when the number of lines in the textView changes
         self.autoScroll()
-        return False
+        return True
     
     def autoScroll(self):
         if self.scrollToEnd:
-            value = self.vadj.get_upper()-self.vadj.get_page_size()
-            if self.vadj.get_value() != value:
-                self.vadj.set_value(value)
+            cursor = self.buffer.get_end_iter()
+            if cursor.get_chars_in_line() > self.plen+self.cursor:
+                cursor.set_line_offset(self.plen+self.cursor)
+            self.buffer.place_cursor(cursor);
+            self.tv.scroll_mark_onscreen(self.buffer.get_insert())
     
     def setInteractiveLine(self,string,writeEvt=None):
         with self.textLock:
@@ -673,16 +679,24 @@ class TvConsole(object):
     
     def updateCursor(self, clear=True):
         
+        cursor = self.buffer.get_end_iter()
+        if cursor.get_chars_in_line() > self.plen+self.cursor:
+            cursor.set_line_offset(self.plen+self.cursor)
+        cursorPlus1 = cursor.copy()
+        cursorPlus1.forward_char()
+        
         if clear or not self.cursorOn:
-            self.buffer.remove_all_tags(self.buffer.get_start_iter(), self.buffer.get_end_iter())
+            start = cursor.copy()
+            end = cursorPlus1.copy()
+            start.backward_char()
+            end.forward_char()
+            self.buffer.remove_tag_by_name('cursor',start,end)
         
         if self.cursorOn:
-            iter = self.buffer.get_end_iter()
-            if iter.get_chars_in_line() > self.plen+self.cursor:
-                iter.set_line_offset(self.plen+self.cursor)
-                iter2 = self.buffer.get_end_iter()
-                iter2.set_line_offset(self.plen+1+self.cursor)
-                self.buffer.apply_tag_by_name('cursor',iter,iter2)
+            self.buffer.apply_tag_by_name('cursor',cursor,cursorPlus1)
+        else:
+            if not clear:
+                self.buffer.remove_tag_by_name('cursor',cursor,cursorPlus1)
     
     def toggleCursor(self):
         self.cursorOn = not self.cursorOn
@@ -706,13 +720,26 @@ class Gui(object):
         global environment
         
         self.window = gtk.Window()
-        self.window.connect("delete_event", self.delete_evt)
-        self.window.set_title("Robo")
-        self.window.set_size_request(800, 600)
+        self.width = 0
+        self.height = 0
+        self.window.connect('delete-event', self.delete_evt)
+        self.window.connect('configure-event', self.configure_window)
+        self.window.set_title('Robo')
+        self.window.set_default_size(800, 600)
         
         self.hpane = gtk.HPaned()
+        self.hpane.proportion=0
+        self.hpane.width=0
+        self.hpane.update = True
+        self.hpane.connect('expose-event', self.expose_pane)
+        self.hpane.positionHandler = self.hpane.connect('notify::position', self.reposition_pane)
         
         self.vpane = gtk.VPaned()
+        self.vpane.proportion=0
+        self.vpane.height=0
+        self.vpane.update = True
+        self.vpane.connect('expose-event', self.expose_pane)
+        self.vpane.positionHandler = self.vpane.connect('notify::position', self.reposition_pane)
         
         self.lm = gtksourceview2.LanguageManager()
         
@@ -736,10 +763,6 @@ class Gui(object):
         if mono:
             self.codeTv.modify_font(mono)
         
-        environment = Environment()
-        locals={'gui':self,'Gui':Gui, 'environment':environment, 'Robot':Robot}
-        self.console = TvConsole(locals=locals, getSource=self.save_code)
-        
         self.codeSw = gtk.ScrolledWindow(hadjustment=None, vadjustment=None)
         self.codeSw.set_policy(gtk.POLICY_AUTOMATIC, gtk.POLICY_AUTOMATIC)
         self.codeSw.add_with_viewport(self.codeTv)
@@ -747,9 +770,10 @@ class Gui(object):
         self.load_code(undoable = False)
         
         self.graphics = gtk.DrawingArea()
-        self.graphics.connect("configure_event", self.configure_graphics)
-        self.graphics.connect("expose_event", self.push_graphics)
+        self.graphics.connect("configure-event", self.configure_graphics)
+        self.graphics.connect("expose-event", self.push_graphics)
         
+        environment = Environment()
         self.canvas = gtk.gdk.Pixmap(self.graphics.window, 1, 1, depth=24)
         self.canvas.widget = self.graphics.window
         environment.canvas = self.canvas
@@ -758,17 +782,21 @@ class Gui(object):
         self.background = gtk.gdk.Pixmap(self.graphics.window, 1, 1, depth=24)
         environment.background = self.background
         
+        locals={'gui':self,'Gui':Gui, 'environment':environment, 'Robot':Robot}
+        self.console = TvConsole(locals=locals, getSource=self.save_code)
+        
         self.hpane.add1(self.vpane)
-        self.vpane.add2(self.console.sw)
         self.hpane.add2(self.codeSw)
         
         self.vpane.add1(self.graphics)
+        self.vpane.add2(self.console.sw)
         
         self.window.add(self.hpane)
         
-        self.console.sw.set_size_request(800,600)
-        
         self.window.show_all()
+        
+        self.vpane.set_position(0)
+        self.hpane.set_position(self.hpane.get_property('max-position'))
     
     def save_code(self):
         b = self.codeTv.get_buffer()
@@ -809,6 +837,44 @@ class Gui(object):
         if not undoable:
             srcBuffer.end_not_undoable_action()
     
+    def configure_window(self, window, event):
+        x,y,w,h = window.get_allocation()
+        
+        if w != self.width:
+            self.hpane.update = False
+            self.width = w
+        
+        if h != self.height:
+            self.vpane.update = False
+            self.height = h
+    
+    def expose_pane(self, pane, event):
+        x,y,w,h = pane.get_allocation()
+        if pane == self.hpane:
+            resized = self.hpane.width != w
+            self.hpane.width = w
+        else:
+            resized = self.vpane.height != h
+            self.vpane.height = h
+        
+        if resized:
+            pane.update = False
+            self.reallocatePane(pane)
+        
+        pane.update = True
+    
+    def reallocatePane(self,pane):
+        maxPos = pane.get_property('max-position')
+        minPos = pane.get_property('min-position')
+        position = int(round(minPos + (maxPos-minPos)*pane.proportion))
+        pane.set_position(position)
+    
+    def reposition_pane(self, widget, property_spec):
+        if widget.update:
+            maxPos = widget.get_property('max-position')
+            minPos = widget.get_property('min-position')
+            widget.proportion = (widget.get_position()-minPos)/float(maxPos-minPos)
+    
     def configure_graphics(self, widget, event):
         
         x,y,w,h = widget.get_allocation()
@@ -844,7 +910,7 @@ class Gui(object):
                         gtk.main_iteration(False)
                     time.sleep(.001)
             except:
-                pass
+                traceback.print_exc(file=sys.__stdout__)
 
 
 gui = None
@@ -854,12 +920,14 @@ def makeGui(guiReady=None, runGui=True):
     try:
         gui = Gui()
         gui.console.guiThread=currentThread()
+    except:
+        traceback.print_exc(file=sys.__stdout__)
     finally:
         if guiReady:
             guiReady.set()
     
-    if runGui:
-        gui.main()
+    if gui and runGui:
+            gui.main()
 
 def main(consoleMain=True):
     
@@ -884,8 +952,6 @@ def main(consoleMain=True):
                 gui.main()
     
     except Exception as e:
-        traceback.print_exc(file=sys.__stdout__)
-    except KeyboardInterrupt as e:
         traceback.print_exc(file=sys.__stdout__)
     return gui
 
