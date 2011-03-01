@@ -2,7 +2,7 @@
 
 import code, sys, pdb, ctypes, copy, time, os, signal, traceback
 
-from threading import Thread, Event, RLock, currentThread
+from threading import Thread, Event, Lock, RLock, currentThread, _MainThread, enumerate as enumerateThreads
 from math import pi,atan2,sin,cos
 
 import pygtk
@@ -88,7 +88,7 @@ class TvConsole(object):
         self.inputWaiting = Event()
         self.inputPending = ''
         self.inputQueue = []
-        self.ipLock = RLock()
+        self.inputLock = RLock() # lock for inputQueue and interactiveLine
         self.interactiveLine = ''
         self.prompt = ''
         self.plen = len(self.prompt)
@@ -98,7 +98,8 @@ class TvConsole(object):
         self.cursor = 0
         self.incomplete = []
         self.EOF = False
-        self.guiThread = None
+        self.guiThread = currentThread() # best guess
+        self.mainThread = list(t for t in enumerateThreads() if type(t) == _MainThread)[0] # best guess
         
         self.tv = gtk.TextView(buffer=None)
         self.tv.set_wrap_mode(gtk.WRAP_WORD)
@@ -130,8 +131,9 @@ class TvConsole(object):
         if mono:
             self.tv.modify_font(mono)
         
-        self.text=''
-        self.textLock=RLock()
+        self.writeBuffer = ''
+        self.writeBufferLock=Lock()
+        self.bufferLock=RLock()
         
         self.i2 = code.InteractiveInterpreter()
         self.i2.write = self.write
@@ -177,6 +179,10 @@ class TvConsole(object):
                            # start, which must happen before the 
                            # blocking write below can succeed.
         
+        sys.stdin = self
+        sys.stdout = self
+        sys.stderr = self
+        
         self.write('Robo Interacive Python Interpreter\n' +
                     'Python ' + sys.version + ' on ' + sys.platform + 
                     '\nType "help", "copyright", "credits" or "license" for more information.\n')
@@ -197,7 +203,7 @@ class TvConsole(object):
             except KeyboardInterrupt:
                 self.write('KeyboardInterrupt\n')
                 self.flush()
-                with self.ipLock:
+                with self.inputLock:
                     self.inputReady.clear()
                 
                 self.incomplete=[]
@@ -209,9 +215,13 @@ class TvConsole(object):
             
             except:
                 traceback.print_exc(file=sys.__stdout__)
+        
+        sys.stderr = sys.__stderr__
+        sys.stdout = sys.__stdout__
+        sys.stdin = sys.__stdin__
     
     def processInput(self):
-        with self.ipLock:
+        with self.inputLock:
             input = None
             self.inputWaiting.clear()
             self.prompt = ''
@@ -236,7 +246,7 @@ class TvConsole(object):
                 self.incomplete=[]
                 self.prompt = sys.ps1
             
-            with self.ipLock:
+            with self.inputLock:
                 while self.inputQueue and not self.inputQueue[0]:
                     del self.inputQueue[0]
                 
@@ -259,10 +269,6 @@ class TvConsole(object):
             source = self.getSource()
         
         try:
-            sys.stdin = self
-            sys.stdout = self
-            sys.stderr = self
-            
             if source:
                 self.source = source
                 try:
@@ -299,9 +305,6 @@ class TvConsole(object):
             
             incomplete = self.i2.runsource(command,'<stdin>','single')
         finally:
-            sys.stderr = sys.__stderr__
-            sys.stdout = sys.__stdout__
-            sys.stdin = sys.__stdin__
             self.EOF = False
             self.softspace = 0
         
@@ -338,7 +341,7 @@ class TvConsole(object):
         self.write(''.join(lines))
     
     def doEntry(self):
-        with self.ipLock:
+        with self.inputLock:
             self.inputQueue.append(self.interactiveLine)
             self.updateHistory(self.interactiveLine)
             self.interactiveLine += '\n'
@@ -366,7 +369,7 @@ class TvConsole(object):
                 if event.state & gtk.gdk.SHIFT_MASK:
                     event.state &= ~gtk.gdk.SHIFT_MASK
                 else:
-                    with self.ipLock:
+                    with self.inputLock:
                         self.interactiveLine += '^C\n'
                         self.inputPending = ''
                         self.inputQueue = []
@@ -395,7 +398,7 @@ class TvConsole(object):
             return False
         
         elif event.keyval == 65362: # up
-            with self.ipLock:
+            with self.inputLock:
                 if self.historyIndex > 0:
                     oldIndex = self.historyIndex
                     self.historyIndex -= 1
@@ -414,7 +417,7 @@ class TvConsole(object):
                     return True
         
         elif event.keyval == 65364: # down
-            with self.ipLock:
+            with self.inputLock:
                 if self.historyIndex < len(self.history):
                     oldIndex = self.historyIndex
                     self.historyIndex += 1
@@ -436,7 +439,7 @@ class TvConsole(object):
                     return True
         
         elif event.keyval == 65361: # left
-            with self.ipLock:
+            with self.inputLock:
                 if self.cursor > 0:
                     self.cursor -= 1
                     self.cursorOn = True
@@ -446,7 +449,7 @@ class TvConsole(object):
             return True
         
         elif event.keyval == 65363: # right
-            with self.ipLock:
+            with self.inputLock:
                 if self.cursor < len(self.interactiveLine):
                     self.cursor += 1
                     self.cursorOn = True
@@ -456,7 +459,7 @@ class TvConsole(object):
             return True
         
         elif event.keyval == 65288: #backspace
-            with self.ipLock:
+            with self.inputLock:
                 if self.cursor > 0:
                     self.interactiveLine = self.interactiveLine[:self.cursor-1]+self.interactiveLine[self.cursor:]
                     self.cursor -= 1
@@ -486,7 +489,7 @@ class TvConsole(object):
         return True
     
     def insertAtCursor(self,string):
-        with self.ipLock:
+        with self.inputLock:
             head = self.interactiveLine[:self.cursor]
             tail = self.interactiveLine[self.cursor:]
             text = head + string + tail
@@ -540,7 +543,7 @@ class TvConsole(object):
         if not self.inputQueue:
             self.inputReady.wait()
         
-        with self.ipLock:
+        with self.inputLock:
             self.inputWaiting.clear()
             if self.inputQueue:
                 self.inputReady.clear()
@@ -572,71 +575,103 @@ class TvConsole(object):
         
         return lines
     
+    def bufferOutput(self,string):
+        string = string.replace('\r\n','\n')
+        start,end = string.startswith('\r'),string[1:].endswith('\r')
+        string = string.strip('\r')
+        
+        lines = [line.rsplit('\r',1)[-1] for line in string.split('\n')]
+        
+        if start:
+            head,sep,tail = self.writeBuffer.rpartition('\n')
+            self.writeBuffer = head+sep or '\r'
+        
+        self.writeBuffer += '\n'.join(lines)
+        
+        if end:
+            self.writeBuffer += '\r'
+    
+    def writeHelper(self,string):
+        with self.writeBufferLock:
+            callNeeded = not self.writeBuffer
+            self.bufferOutput(string)
+        currentThread().callNeeded = callNeeded
+        return callNeeded
+    
     def write(self, string, blocking=False):
-        if self.guiThread == currentThread():
-            self.insertEnd(string)
+        if currentThread() == self.mainThread:
+            # workaround to block SIGINT from this section 
+            # since Lock.acquire() handles it poorly
+            t=Thread(target=self.writeHelper,name='WriteHelperThread',args=(string,))
+            t.start()
+            t.join()
+            callNeeded = t.callNeeded
         else:
-            writeEvt=Event()
-            gobject.idle_add(self.insertEnd, string, writeEvt, priority = gobject.PRIORITY_HIGH)
-            
-            while self.pendingWrites and self.pendingWrites[0].isSet():
-                del self.pendingWrites[0]
+            callNeeded = self.writeHelper(string)
+        
+        if self.guiThread == currentThread():
+            if callNeeded:
+                self.insertEnd()
+        else:
+            if callNeeded:
+                self.pendingWrite=Event()
+                gobject.idle_add(self.insertEnd, self.pendingWrite, priority = gobject.PRIORITY_HIGH)
             
             if blocking:
-                writeEvt.wait()
-            else:
-                self.pendingWrites.append(writeEvt)
+                self.pendingWrite.wait()
     
     def flush(self):
-        if self.guiThread != currentThread():
-            while self.pendingWrites:
-                self.pendingWrites.pop(0).wait()
-    
-    def insertEnd(self,string,writeEvt=None):
-        with self.textLock:
-            
-            if self.pendingCR:
-                string = '\r' + string
-            
-            if string.endswith('\r'):
-                self.pendingCR = True
-                string = string.rstrip('\r')
+        with self.writeBufferLock:
+            callNeeded = bool(self.writeBuffer)
+        if callNeeded:
+            if self.guiThread == currentThread():
+                self.insertEnd()
             else:
-                self.pendingCR = False
-            
-            remaining = string
-            elements = []
-            while remaining:
-                element,cr,remaining = remaining.partition('\r')
-                if element:
-                    elements.append(element)
-                if cr and (not elements or elements[-1] != cr):
-                    elements.append(cr)
-            
+                self.pendingWrite=Event()
+                gobject.idle_add(self.insertEnd, self.pendingWrite, priority = gobject.PRIORITY_HIGH)
+        
+        if self.guiThread != currentThread():
+            self.pendingWrite.wait()
+    
+    def insertEnd(self,writeEvt=None):
+        
+        with self.writeBufferLock:
+            string = self.writeBuffer
+            self.writeBuffer = ''
+        cr = self.pendingCR or string.startswith('\r')
+        self.pendingCR = string.endswith('\r')
+        string = string.strip('\r')
+        
+        if string:
             self.setInteractiveLine('')
             
-            # remove the trailing space for the cursor
-            end = self.buffer.get_end_iter()
-            iter = end.copy()
-            iter.backward_char()
-            self.buffer.delete(iter, end)
+            with self.bufferLock:
+                # remove the trailing space for the cursor
+                end = self.buffer.get_end_iter()
+                iter = end.copy()
+                iter.backward_char()
+                self.buffer.delete(iter, end)
+                
+                iter.set_line_offset(0)
+                cleanIter=iter.copy()
+                cleanIter.backward_lines(4) # workaround for a gtkTextView line wrap bug
+                clean = self.buffer.create_mark(None,cleanIter,left_gravity=True)
+                
+                if cr:
+                    self.buffer.delete(iter, end)
+                
+                self.buffer.insert(end,string)
+                self.buffer.remove_tag_by_name('cursor',self.buffer.get_iter_at_mark(clean),end)
+                self.buffer.delete_mark(clean)
             
-            for i in range(len(elements)):
-                if elements[i] == '\r':
-                    if elements[i+1][0] != '\n':
-                        iter.set_line_offset(0)
-                        end = self.buffer.get_end_iter()
-                        self.buffer.delete(iter, end)
-                else:
-                    self.buffer.insert(iter,elements[i])
-            
-            self.buffer.remove_tag_by_name('cursor',*self.buffer.get_bounds())
-            
-            self.prompt = (self.prompt + string).split('\n')[-1].split('\r')[-1]
+            if cr:
+                self.prompt=''
+            self.prompt = (self.prompt + string).split('\n')[-1]
             self.plen = len(self.prompt)
             self.setInteractiveLine(self.interactiveLine)
+            
+            self.updateCursor()
         
-        self.updateCursor()
         if writeEvt:
             writeEvt.set()
         return False
@@ -658,7 +693,7 @@ class TvConsole(object):
             self.tv.scroll_mark_onscreen(self.buffer.get_insert())
     
     def setInteractiveLine(self,string,writeEvt=None):
-        with self.textLock:
+        with self.bufferLock:
             end = self.buffer.get_end_iter()
             iter = self.buffer.get_end_iter()
             iter.set_line_offset(0)
@@ -809,7 +844,7 @@ class Gui(object):
         return source
     
     def load_code(self,filename='source.py',undoable=True):
-        loadThread = Thread(target=self.asynchronus_load_code, name='Load-Code', args=(filename, undoable))
+        loadThread = Thread(target=self.asynchronus_load_code, name='LoadCode', args=(filename, undoable))
         loadThread.daemon = True
         loadThread.start()
     
@@ -939,11 +974,13 @@ def main(consoleMain=True):
     
     try:
         if consoleMain:
-            Thread(target=makeGui, name="GUI-Thread", args=(guiReady,)).start()
+            Thread(target=makeGui, name="GUIThread", args=(guiReady,)).start()
         else:
             makeGui(guiReady, False)
         
         guiReady.wait() # gui thread must fully initialize console component
+        
+        gui.console.mainThread = currentThread()
         
         if gui:
             gui.console.start(consoleMain)
