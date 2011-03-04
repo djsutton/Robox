@@ -125,15 +125,14 @@ class TvConsole(object):
         self.blockCursor = self.buffer.create_tag('cursor', background='black',foreground='white')
         
         self.pendingCR = False
-        self.pendingWrites=[]
         
         mono = pango.FontDescription('monospace 10')
         if mono:
             self.tv.modify_font(mono)
         
         self.writeBuffer = ''
-        self.writeBufferLock=Lock()
-        self.bufferLock=RLock()
+        self.writeBufferLock = RLock()
+        self.bufferLock = RLock()
         
         self.i2 = code.InteractiveInterpreter()
         self.i2.write = self.write
@@ -143,8 +142,8 @@ class TvConsole(object):
             self.setLocals(locals)
         
         self.getSource = getSource
-        self.source=''
-        self.sourceLocals={}
+        self.source = ''
+        self.sourceLocals = set()
         
         if not hasattr(sys,'ps1'):
             sys.ps1 = '>>> '
@@ -153,7 +152,6 @@ class TvConsole(object):
         
         self.cursorOn = True
         self.running = Event()
-        self.running.clear()
     
     def start(self,main=True):
         
@@ -237,8 +235,8 @@ class TvConsole(object):
         if input != None and self.running.isSet():
             
             incomplete = self.executeInput(input)
-            
             self.flush()
+            
             if incomplete:
                 self.incomplete.append(input)
                 self.prompt = sys.ps2
@@ -276,23 +274,23 @@ class TvConsole(object):
                 except (OverflowError, SyntaxError, ValueError) as e:
                     self.i2.showsyntaxerror('<code area>')
                 else:
-                    oldSourceLocals = self.sourceLocals.keys()
+                    locals = self.i2.locals.copy()
+                    oldSourceLocals = self.sourceLocals
                     
-                    self.sourceLocals.clear()
+                    for key in oldSourceLocals:
+                        try:
+                            del self.i2.locals[key]
+                        except:
+                            pass
+                    
+                    oldKeys = self.i2.locals.keys()
+                    
                     try:
-                        exec code in self.sourceLocals
+                        exec code in self.i2.locals
                     except:
                         self.i2.showtraceback()
                     else:
-                        removedSourceLocals = list(set(oldSourceLocals) - set(self.sourceLocals.keys()))
-                        
-                        for key in removedSourceLocals:
-                            try:
-                                del self.i2.locals[key]
-                            except:
-                                traceback.print_exc(file=sys.__stdout__)
-                        
-                        self.setLocals(self.sourceLocals)
+                        self.sourceLocals=set(self.i2.locals.keys())-set(oldKeys)
             
             if not input:
                 try:
@@ -609,9 +607,8 @@ class TvConsole(object):
         else:
             callNeeded = self.writeHelper(string)
         
-        if self.guiThread == currentThread():
-            if callNeeded:
-                self.insertEnd()
+        if self.guiThread == currentThread() and blocking:
+            self.insertEnd(blocking = True)
         else:
             if callNeeded:
                 self.pendingWrite=Event()
@@ -633,48 +630,65 @@ class TvConsole(object):
         if self.guiThread != currentThread():
             self.pendingWrite.wait()
     
-    def insertEnd(self,writeEvt=None):
+    def insertEnd(self,writeEvt=None, blocking=False):
         
-        with self.writeBufferLock:
-            string = self.writeBuffer
-            self.writeBuffer = ''
-        cr = self.pendingCR or string.startswith('\r')
-        self.pendingCR = string.endswith('\r')
-        string = string.strip('\r')
+        writeBufferRelease = self.writeBufferLock.release
         
-        if string:
-            self.setInteractiveLine('')
-            
-            with self.bufferLock:
-                # remove the trailing space for the cursor
-                end = self.buffer.get_end_iter()
-                iter = end.copy()
-                iter.backward_char()
-                self.buffer.delete(iter, end)
-                
-                iter.set_line_offset(0)
-                cleanIter=iter.copy()
-                cleanIter.backward_lines(4) # workaround for a gtkTextView line wrap bug
-                clean = self.buffer.create_mark(None,cleanIter,left_gravity=True)
-                
-                if cr:
-                    self.buffer.delete(iter, end)
-                
-                self.buffer.insert(end,string)
-                self.buffer.remove_tag_by_name('cursor',self.buffer.get_iter_at_mark(clean),end)
-                self.buffer.delete_mark(clean)
-            
-            if cr:
-                self.prompt=''
-            self.prompt = (self.prompt + string).split('\n')[-1]
-            self.plen = len(self.prompt)
-            self.setInteractiveLine(self.interactiveLine)
-            
-            self.updateCursor()
-        
-        if writeEvt:
-            writeEvt.set()
-        return False
+        if self.writeBufferLock.acquire(blocking):
+            try:
+                if self.bufferLock.acquire(blocking):
+                    try:
+                        string = self.writeBuffer
+                        self.writeBuffer = ''
+                        
+                        writeBufferRelease()
+                        writeBufferRelease = None
+                        
+                        cr = self.pendingCR or string.startswith('\r')
+                        self.pendingCR = string.endswith('\r')
+                        string = string.strip('\r')
+                        
+                        if string:
+                            self.setInteractiveLine('')
+                        
+                            # remove the trailing space for the cursor
+                            end = self.buffer.get_end_iter()
+                            iter = end.copy()
+                            iter.backward_char()
+                            self.buffer.delete(iter, end)
+                            
+                            iter.set_line_offset(0)
+                            cleanIter=iter.copy()
+                            cleanIter.backward_lines(4) # workaround for a gtkTextView line wrap bug
+                            clean = self.buffer.create_mark(None,cleanIter,left_gravity=True)
+                            
+                            if cr:
+                                self.buffer.delete(iter, end)
+                            
+                            self.buffer.insert(end,string)
+                            self.buffer.remove_tag_by_name('cursor',self.buffer.get_iter_at_mark(clean),end)
+                            self.buffer.delete_mark(clean)
+                            
+                            if cr:
+                                self.prompt=''
+                            self.prompt = (self.prompt + string).split('\n')[-1]
+                            self.plen = len(self.prompt)
+                            self.setInteractiveLine(self.interactiveLine)
+                            
+                            self.updateCursor()
+                        
+                        if writeEvt:
+                            writeEvt.set()
+                        return False #no need to call this function again
+                    finally:
+                        self.bufferLock.release()
+                else:
+                    return True #call this function again
+            finally:
+                if writeBufferRelease:
+                    writeBufferRelease()
+        else:
+            return True #call this function again
     
     def scrollCallback(self, adj):
         self.scrollToEnd =  adj.get_value() == adj.get_upper()-adj.get_page_size()
@@ -689,8 +703,9 @@ class TvConsole(object):
             cursor = self.buffer.get_end_iter()
             if cursor.get_chars_in_line() > self.plen+self.cursor:
                 cursor.set_line_offset(self.plen+self.cursor)
-            self.buffer.place_cursor(cursor);
-            self.tv.scroll_mark_onscreen(self.buffer.get_insert())
+            cursorMark = self.buffer.create_mark(None,cursor,left_gravity=True)
+            self.tv.scroll_mark_onscreen(cursorMark)
+            self.buffer.delete_mark(cursorMark)
     
     def setInteractiveLine(self,string,writeEvt=None):
         with self.bufferLock:
@@ -803,6 +818,7 @@ class Gui(object):
         self.codeSw.add_with_viewport(self.codeTv)
         
         self.load_code(undoable = False)
+        self.codeModified = True
         
         self.graphics = gtk.DrawingArea()
         self.graphics.connect("configure-event", self.configure_graphics)
@@ -818,7 +834,7 @@ class Gui(object):
         environment.background = self.background
         
         locals={'gui':self,'Gui':Gui, 'environment':environment, 'Robot':Robot}
-        self.console = TvConsole(locals=locals, getSource=self.save_code)
+        self.console = TvConsole(locals=locals, getSource=self.get_code)
         
         self.hpane.add1(self.vpane)
         self.hpane.add2(self.codeSw)
@@ -833,14 +849,28 @@ class Gui(object):
         self.vpane.set_position(0)
         self.hpane.set_position(self.hpane.get_property('max-position'))
     
-    def save_code(self):
-        b = self.codeTv.get_buffer()
-        source = b.get_text(*(b.get_bounds()))
-        if source[-1] != '\n':
-            source += '\n'
-        f=open('source.py','w')
-        f.write(source)
-        f.close()
+    def save_code(self,force=False):
+        srcBuffer = self.codeTv.get_buffer()
+        modified = srcBuffer.get_modified()
+        if modified or force:
+            source = srcBuffer.get_text(*srcBuffer.get_bounds())
+            source = source.replace('\r\n','\n')
+            
+            if source[-1] != '\n':
+                source += '\n'
+            if modified:
+                with open('source.py','wb') as f:
+                    f.write(source)
+                srcBuffer.set_modified(False)
+                self.codeModified = True
+        else:
+            source=None
+        
+        return source
+    
+    def get_code(self):
+        source = self.save_code(self.codeModified)
+        self.codeModified = False
         return source
     
     def load_code(self,filename='source.py',undoable=True):
@@ -868,6 +898,7 @@ class Gui(object):
             srcBuffer.begin_not_undoable_action()
         
         srcBuffer.set_text(code)
+        srcBuffer.set_modified(False)
         
         if not undoable:
             srcBuffer.end_not_undoable_action()
