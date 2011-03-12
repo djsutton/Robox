@@ -2,7 +2,7 @@
 
 import code, sys, pdb, ctypes, copy, time, os, signal, traceback
 
-from threading import Thread, Event, Lock, RLock, currentThread, _MainThread, enumerate as enumerateThreads
+from threading import Thread, Condition, Event, Lock, RLock, currentThread, _MainThread, enumerate as enumerateThreads
 from math import pi,atan2,sin,cos
 
 import pygtk
@@ -84,11 +84,10 @@ class Environment(object):
 
 class TvConsole(object):
     def __init__(self,locals=None, getSource=None):
-        self.inputReady = Event()
-        self.inputWaiting = Event()
+        self.inputLock = Lock() # lock for inputQueue, inputReady and interactiveLine
+        self.inputReady = Condition(self.inputLock)
         self.inputPending = ''
         self.inputQueue = []
-        self.inputLock = RLock() # lock for inputQueue and interactiveLine
         self.interactiveLine = ''
         self.prompt = ''
         self.plen = len(self.prompt)
@@ -120,7 +119,7 @@ class TvConsole(object):
         self.vadj = self.sw.get_vadjustment()
         
         self.scrollToEnd = True;
-        self.sw.connect_after('size-allocate', self.sizeCallback)
+        self.vadj.connect('changed', self.sizeCallback)
         self.vadj.connect('value-changed', self.scrollCallback)
         self.blockCursor = self.buffer.create_tag('cursor', background='black',foreground='white')
         
@@ -170,7 +169,8 @@ class TvConsole(object):
     def stopInteracting(self, *args):
         self.running.clear()
         self.sendSigint()
-        self.inputReady.set()
+        with self.inputLock:
+            self.inputReady.notify()
     
     def interact(self):
         self.running.set() # This Event triggers the gtk main loop to 
@@ -191,18 +191,20 @@ class TvConsole(object):
         
         while self.running.isSet():
             try:
-                self.inputWaiting.set()
+                input = None
+                with self.inputLock:
+                    if not self.inputQueue:
+                        self.inputReady.wait()
+                    
+                    if self.inputQueue:
+                        input = self.inputQueue.pop(0)
                 
-                if not self.inputQueue:
-                    self.inputReady.wait()
-                
-                self.processInput()
+                if input != None:
+                    self.processInput(input)
             
             except KeyboardInterrupt:
                 self.write('KeyboardInterrupt\n')
                 self.flush()
-                with self.inputLock:
-                    self.inputReady.clear()
                 
                 self.incomplete=[]
                 self.prompt = sys.ps1
@@ -218,19 +220,11 @@ class TvConsole(object):
         sys.stdout = sys.__stdout__
         sys.stdin = sys.__stdin__
     
-    def processInput(self):
-        with self.inputLock:
-            input = None
-            self.inputWaiting.clear()
-            self.prompt = ''
-            preSetLine=Event()
-            gobject.idle_add(self.setInteractiveLine,self.interactiveLine,preSetLine)
-            preSetLine.wait()
-            
-            if self.inputQueue:
-                
-                self.inputReady.clear()
-                input = self.inputQueue.pop(0)
+    def processInput(self, input):
+        self.prompt = ''
+        preSetLine=Event()
+        gobject.idle_add(self.setInteractiveLine,self.interactiveLine,preSetLine)
+        preSetLine.wait()
         
         if input != None and self.running.isSet():
             
@@ -249,9 +243,8 @@ class TvConsole(object):
                     del self.inputQueue[0]
                 
                 if self.inputQueue:
-                    nextLine = self.inputQueue[0]
+                    nextLine = self.inputQueue[0]+'\n'
                 else:
-                    self.inputReady.clear()
                     nextLine = self.interactiveLine
             
             postSetLine=Event()
@@ -343,16 +336,17 @@ class TvConsole(object):
             self.inputQueue.append(self.interactiveLine)
             self.updateHistory(self.interactiveLine)
             self.interactiveLine += '\n'
+            
+            self.cursor = 0
+            self.cursorOn = True
+            self.setInteractiveLine(self.interactiveLine)
+            self.interactiveLine = ''
+            self.prompt = ''
+            self.inputPending = ''
+            self.inputReady.notify()
         
-        self.cursor = 0
-        self.cursorOn = True
-        self.setInteractiveLine(self.interactiveLine)
-        self.interactiveLine = ''
-        self.prompt = ''
-        self.inputPending = ''
         self.scrollToEnd = True
         self.autoScroll()
-        self.inputReady.set()
     
     def keyCallback(self,widget,event,data=None):
         
@@ -374,14 +368,17 @@ class TvConsole(object):
                         if self.historyIndex in self.historyModified:
                             del self.historyModified[self.historyIndex]
                         self.historyIndex = len(self.history)
+                        
+                        self.cursor = 0
+                        self.cursorOn = True
+                        self.setInteractiveLine(self.interactiveLine)
+                        self.interactiveLine = ''
+                        self.prompt = ''
+                        self.sendSigint()
+                        self.inputReady.notify()
                     
-                    self.setInteractiveLine(self.interactiveLine)
-                    self.interactiveLine = ''
-                    self.prompt = ''
                     self.scrollToEnd = True
                     self.autoScroll()
-                    self.sendSigint()
-                    self.inputReady.set()
                     return True
             
             if event.keyval == ord('d') or event.keyval == ord('D'):
@@ -530,34 +527,44 @@ class TvConsole(object):
             del self.historyModified[self.historyIndex]
         self.historyIndex = len(self.history)    
     
-    def read(self,size=-1):
+    def read(self,size=-1,lines=-1):
         
         if size == 0:
             return '\n'
         
-        input = None
-        self.inputWaiting.set()
+        input = ''
+        reading = True
         
-        if not self.inputQueue:
-            self.inputReady.wait()
-        
-        with self.inputLock:
-            self.inputWaiting.clear()
-            if self.inputQueue:
-                self.inputReady.clear()
+        while reading and not self.EOF:
+            with self.inputLock:
                 
-                if size > 0:
-                    input = self.inputQueue[0][:size-1]
-                    self.inputQueue[0] = self.inputQueue[0][size-1:]
-                    if not self.inputQueue[0]:
-                        del self.inputQueue[0]
-                else:
-                    input = self.inputQueue.pop(0)
+                if not self.inputQueue:
+                    self.inputReady.wait()
+            
+                if self.inputQueue:
+                    while self.inputQueue and reading:
+                        if size > 0:
+                            fragment = (self.inputQueue[0]+'\n')[:size]
+                            self.inputQueue[0] = self.inputQueue[0][size:]
+                            if not self.inputQueue[0]:
+                                del self.inputQueue[0]
+                                lines -= 1
+                                if lines == 0:
+                                    reading = False
+                            input += fragment
+                            size -= len(fragment)
+                            if size <= 0:
+                                reading = False
+                        else:
+                            input += self.inputQueue.pop(0)+'\n'
+                            lines -= 1
+                            if lines == 0:
+                                reading = False
         
-        return input+'\n'
+        return input
     
     def readline(self,size=-1):
-        return self.read(size)
+        return self.read(size,1)
     
     def readlines(self,sizehint=-1):
         lines=[]
@@ -565,7 +572,7 @@ class TvConsole(object):
         if sizehint < 0:
             sizehint = None
         
-        while not self.EOF or (sizehint and len(lines) < sizehint):
+        while not self.EOF or (sizehint and sum(len(line) for line in lines) < sizehint):
             lines.append(self.readline())
         
         if lines[-1] == '\n':
@@ -694,9 +701,8 @@ class TvConsole(object):
         self.scrollToEnd =  adj.get_value() == adj.get_upper()-adj.get_page_size()
     
     def sizeCallback(self,widget,data=None):
-        # called when the number of lines in the textView changes
+        # called when the size of self.vadj changes
         self.autoScroll()
-        return True
     
     def autoScroll(self):
         if self.scrollToEnd:
