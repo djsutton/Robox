@@ -53,7 +53,7 @@ class Robot(object):
     def boundingBox(self):
         return self.x-self.xextent, self.y-self.yextent,self.x+self.xextent,self.y+self.yextent
     
-    def drawingBoundingBox(self):    
+    def drawingBoundingBox(self):
         x1,y1,x2,y2 = self.boundingBox()
         w,h = self.getCanvas().get_size()
         return int(x1+w/2),int(h/2-y2),int(x2+w/2),int(h/2-y1)
@@ -82,8 +82,10 @@ class Environment(object):
         self.background = None
 
 
-class TvConsole(object):
-    def __init__(self,locals=None, getSource=None):
+class GtkPythonConsole(gtk.TextView):
+    def __init__(self,buffer=None, message='Interacive Python Interpreter', locals=None, getSource=None):
+        super(GtkPythonConsole, self).__init__(buffer)
+        
         self.inputLock = Lock() # lock for inputQueue, inputReady and interactiveLine
         self.inputReady = Condition(self.inputLock)
         self.inputPending = ''
@@ -100,34 +102,28 @@ class TvConsole(object):
         self.guiThread = currentThread() # best guess
         self.mainThread = list(t for t in enumerateThreads() if type(t) == _MainThread)[0] # best guess
         
-        self.tv = gtk.TextView(buffer=None)
-        self.tv.set_wrap_mode(gtk.WRAP_WORD)
-        self.tv.set_editable(False)
+        self.set_wrap_mode(gtk.WRAP_WORD)
+        self.set_editable(False)
         
-        self.sw = gtk.ScrolledWindow(hadjustment=None, vadjustment=None)
-        self.sw.set_policy(gtk.POLICY_AUTOMATIC, gtk.POLICY_AUTOMATIC)
-        self.sw.add(self.tv)
+        self.add_events(gtk.gdk.KEY_PRESS)
+        self.connect('key-press-event',self.keyCallback)
+        self.connect('paste-clipboard', self.pasteCallback)
+        self.connect_after('populate-popup', self.popupCallback)
+        self.connect('destroy', self.stopInteracting)
+        self.connect('set-scroll-adjustments', self.adjustmentsCallback)
+        self.set_cursor_visible(False)
         
-        self.tv.add_events(gtk.gdk.KEY_PRESS)
-        self.tv.connect('key-press-event',self.keyCallback)
-        self.tv.connect('paste-clipboard', self.pasteCallback)
-        self.tv.connect_after('populate-popup', self.popupCallback)
-        self.tv.connect('destroy', self.stopInteracting)
-        self.tv.set_cursor_visible(False)
-        
-        self.buffer = self.tv.get_buffer()
-        self.vadj = self.sw.get_vadjustment()
+        self.buffer = buffer or self.get_buffer()
+        self.vadj = None
         
         self.scrollToEnd = True;
-        self.vadj.connect('changed', self.sizeCallback)
-        self.vadj.connect('value-changed', self.scrollCallback)
         self.blockCursor = self.buffer.create_tag('cursor', background='black',foreground='white')
         
         self.pendingCR = False
         
         mono = pango.FontDescription('monospace 10')
         if mono:
-            self.tv.modify_font(mono)
+            self.modify_font(mono)
         
         self.writeBuffer = ''
         self.writeBufferLock = RLock()
@@ -144,10 +140,16 @@ class TvConsole(object):
         self.source = ''
         self.sourceLocals = set()
         
+        self.message = message
+        if self.message and not self.message.endswith('\n'):
+            self.message += '\n'
+        else:
+            self.message = ''
+        
         if not hasattr(sys,'ps1'):
             sys.ps1 = '>>> '
         if not hasattr(sys,'ps2'):
-            sys.ps2 =  '... '
+            sys.ps2 = '... '
         
         self.cursorOn = True
         self.running = Event()
@@ -173,16 +175,16 @@ class TvConsole(object):
             self.inputReady.notify()
     
     def interact(self):
-        self.running.set() # This Event triggers the gtk main loop to 
-                           # start, which must happen before the 
+        self.running.set() # This Event triggers the gtk main loop to
+                           # start, which must happen before the
                            # blocking write below can succeed.
         
         sys.stdin = self
         sys.stdout = self
         sys.stderr = self
         
-        self.write('Robo Interacive Python Interpreter\n' +
-                    'Python ' + sys.version + ' on ' + sys.platform + 
+        self.write(self.message +
+                    'Python ' + sys.version + ' on ' + sys.platform +
                     '\nType "help", "copyright", "credits" or "license" for more information.\n')
         self.flush()
         self.prompt = sys.ps1
@@ -464,7 +466,7 @@ class TvConsole(object):
                     self.updateCursor()
                     event.keyval = 0 # flow through to setInteractive line at the end of this block
                 else:
-                    self.scrollToEnd = True  
+                    self.scrollToEnd = True
                     self.autoScroll()
                     return True
         
@@ -525,7 +527,7 @@ class TvConsole(object):
         
         if self.historyIndex in self.historyModified:
             del self.historyModified[self.historyIndex]
-        self.historyIndex = len(self.history)    
+        self.historyIndex = len(self.history)
     
     def read(self,size=-1,lines=-1):
         
@@ -605,7 +607,7 @@ class TvConsole(object):
     
     def write(self, string, blocking=False):
         if currentThread() == self.mainThread:
-            # workaround to block SIGINT from this section 
+            # workaround to block SIGINT from this section
             # since Lock.acquire() handles it poorly
             t=Thread(target=self.writeHelper,name='WriteHelperThread',args=(string,))
             t.start()
@@ -698,11 +700,22 @@ class TvConsole(object):
             return True #call this function again
     
     def scrollCallback(self, adj):
-        self.scrollToEnd =  adj.get_value() == adj.get_upper()-adj.get_page_size()
+        self.scrollToEnd = adj.get_value() == adj.get_upper()-adj.get_page_size()
     
     def sizeCallback(self,widget,data=None):
         # called when the size of self.vadj changes
         self.autoScroll()
+    
+    def adjustmentsCallback(self, textview, hadjustment, vadjustment):
+        if self.vadj:
+            self.vadj.disconnect_by_func(self.sizeCallback)
+            self.vadj.disconnect_by_func(self.scrollCallback)
+        
+        self.vadj = vadjustment
+        
+        if self.vadj:
+            self.vadj.connect('changed', self.sizeCallback)
+            self.vadj.connect('value-changed', self.scrollCallback)
     
     def autoScroll(self):
         if self.scrollToEnd:
@@ -710,7 +723,7 @@ class TvConsole(object):
             if cursor.get_chars_in_line() > self.plen+self.cursor:
                 cursor.set_line_offset(self.plen+self.cursor)
             cursorMark = self.buffer.create_mark(None,cursor,left_gravity=True)
-            self.tv.scroll_mark_onscreen(cursorMark)
+            self.scroll_mark_onscreen(cursorMark)
             self.buffer.delete_mark(cursorMark)
     
     def setInteractiveLine(self,string,writeEvt=None):
@@ -806,22 +819,22 @@ class Gui(object):
         buffer.set_highlight_syntax(True)
         buffer.set_highlight_matching_brackets(True)
         
-        self.codeTv = gtksourceview2.View(buffer)
-        self.codeTv.set_indent_width(4)
-        self.codeTv.set_tab_width(4)
-        self.codeTv.set_insert_spaces_instead_of_tabs(True)
-        self.codeTv.set_indent_on_tab(True)
-        self.codeTv.set_highlight_current_line(True)
-        self.codeTv.set_auto_indent(True)
-        self.codeTv.set_show_line_numbers(True)
+        self.codeArea = gtksourceview2.View(buffer)
+        self.codeArea.set_indent_width(4)
+        self.codeArea.set_tab_width(4)
+        self.codeArea.set_insert_spaces_instead_of_tabs(True)
+        self.codeArea.set_indent_on_tab(True)
+        self.codeArea.set_highlight_current_line(True)
+        self.codeArea.set_auto_indent(True)
+        self.codeArea.set_show_line_numbers(True)
         
         mono = pango.FontDescription('monospace 10')
         if mono:
-            self.codeTv.modify_font(mono)
+            self.codeArea.modify_font(mono)
         
         self.codeSw = gtk.ScrolledWindow(hadjustment=None, vadjustment=None)
         self.codeSw.set_policy(gtk.POLICY_AUTOMATIC, gtk.POLICY_AUTOMATIC)
-        self.codeSw.add_with_viewport(self.codeTv)
+        self.codeSw.add(self.codeArea)
         
         self.load_code(undoable = False)
         self.codeModified = True
@@ -840,13 +853,17 @@ class Gui(object):
         environment.background = self.background
         
         locals={'gui':self,'Gui':Gui, 'environment':environment, 'Robot':Robot}
-        self.console = TvConsole(locals=locals, getSource=self.get_code)
+        self.console = GtkPythonConsole(message='Robo Interacive Python Interpreter', locals=locals, getSource=self.get_code)
+        
+        self.consoleSw = gtk.ScrolledWindow(hadjustment=None, vadjustment=None)
+        self.consoleSw.set_policy(gtk.POLICY_AUTOMATIC, gtk.POLICY_AUTOMATIC)
+        self.consoleSw.add(self.console)
         
         self.hpane.add1(self.vpane)
         self.hpane.add2(self.codeSw)
         
         self.vpane.add1(self.graphics)
-        self.vpane.add2(self.console.sw)
+        self.vpane.add2(self.consoleSw)
         
         self.window.add(self.hpane)
         
@@ -856,7 +873,7 @@ class Gui(object):
         self.hpane.set_position(self.hpane.get_property('max-position'))
     
     def save_code(self,force=False):
-        srcBuffer = self.codeTv.get_buffer()
+        srcBuffer = self.codeArea.get_buffer()
         modified = srcBuffer.get_modified()
         if modified or force:
             source = srcBuffer.get_text(*srcBuffer.get_bounds())
@@ -898,7 +915,7 @@ class Gui(object):
             gobject.idle_add(self.set_code, text, undoable)
     
     def set_code(self,code,undoable=True):
-        srcBuffer = self.codeTv.get_buffer()
+        srcBuffer = self.codeArea.get_buffer()
         
         if not undoable:
             srcBuffer.begin_not_undoable_action()
