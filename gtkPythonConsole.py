@@ -18,11 +18,20 @@ if sys.platform == 'win32':
 else:
     kernel32 = None
 
+
+def gtkExec(function, *args, **kwargs):
+    return gobject.idle_add(executeWithGtkLock, function, *args, **kwargs)
+
+def executeWithGtkLock(function, *args, **kwargs):
+    with gtk.gdk.lock:
+        return function(*args, **kwargs)
+
+
 class GtkPythonConsole(gtk.TextView):
     def __init__(self,buffer=None, message='Interacive Python Interpreter', locals=None, getSource=None):
         super(GtkPythonConsole, self).__init__(buffer)
         
-        self.inputLock = Lock() # lock for inputQueue, inputReady and interactiveLine
+        self.inputLock = RLock() # lock for inputQueue, inputReady and interactiveLine
         self.inputReady = Condition(self.inputLock)
         self.inputPending = ''
         self.inputQueue = []
@@ -125,7 +134,7 @@ class GtkPythonConsole(gtk.TextView):
         self.flush()
         self.prompt = sys.ps1
         self.cursor = 0
-        gobject.idle_add(self.setInteractiveLine,'')
+        gtkExec(self.setInteractiveLine,'')
         
         while self.running.isSet():
             try:
@@ -148,7 +157,7 @@ class GtkPythonConsole(gtk.TextView):
                 self.prompt = sys.ps1
                 
                 setEvt=Event()
-                gobject.idle_add(self.setInteractiveLine,self.interactiveLine, setEvt)
+                gtkExec(self.setInteractiveLine,self.interactiveLine, setEvt)
                 setEvt.wait()
             
             except:
@@ -161,7 +170,7 @@ class GtkPythonConsole(gtk.TextView):
     def processInput(self, input):
         self.prompt = ''
         preSetLine=Event()
-        gobject.idle_add(self.setInteractiveLine,self.interactiveLine,preSetLine)
+        gtkExec(self.setInteractiveLine,self.interactiveLine,preSetLine)
         preSetLine.wait()
         
         if input != None and self.running.isSet():
@@ -186,7 +195,7 @@ class GtkPythonConsole(gtk.TextView):
                     nextLine = self.interactiveLine
             
             postSetLine=Event()
-            gobject.idle_add(self.setInteractiveLine,nextLine,postSetLine)
+            gtkExec(self.setInteractiveLine,nextLine,postSetLine)
             postSetLine.wait()
     
     def executeInput(self,input):
@@ -257,7 +266,7 @@ class GtkPythonConsole(gtk.TextView):
                 if filename == '<code area>':
                     line = self.source.split('\n')[lineno-1]
                     tblist[i] = (filename, lineno, function, line)
-                if filename == __file__:
+                if filename in __file__:
                     del tblist[i:]
                 i += 1
             
@@ -545,6 +554,7 @@ class GtkPythonConsole(gtk.TextView):
         if currentThread() == self.mainThread:
             # workaround to block SIGINT from this section
             # since Lock.acquire() handles it poorly
+            # problem demonstrated in lockTest.py
             t=Thread(target=self.writeHelper,name='WriteHelperThread',args=(string,))
             t.start()
             t.join()
@@ -557,7 +567,7 @@ class GtkPythonConsole(gtk.TextView):
         else:
             if callNeeded:
                 self.pendingWrite=Event()
-                gobject.idle_add(self.insertEnd, self.pendingWrite, priority = gobject.PRIORITY_HIGH)
+                gtkExec(self.insertEnd, self.pendingWrite, priority = gobject.PRIORITY_HIGH)
             
             if blocking:
                 self.pendingWrite.wait()
@@ -570,7 +580,7 @@ class GtkPythonConsole(gtk.TextView):
                 self.insertEnd()
             else:
                 self.pendingWrite=Event()
-                gobject.idle_add(self.insertEnd, self.pendingWrite, priority = gobject.PRIORITY_HIGH)
+                gtkExec(self.insertEnd, self.pendingWrite, priority = gobject.PRIORITY_HIGH)
         
         if self.guiThread != currentThread():
             self.pendingWrite.wait()

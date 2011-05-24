@@ -14,9 +14,11 @@ import pango
 import gtksourceview2
 
 import gtkPythonConsole
+gtkExec = gtkPythonConsole.gtkExec
 
 if not os.getcwd() in sys.path:
     sys.path = [os.getcwd()] + sys.path
+
 
 class Robot(object):
     def __init__(self,x=0,y=0,heading=0):
@@ -40,8 +42,9 @@ class Robot(object):
     
     def queueRedraw(self):
         try:
-            self.environment.canvas.widget.queue_draw_area(*(self.lastDraw))
-            self.environment.canvas.widget.queue_draw_area(*self.drawingBoundingBox())
+            with gtk.gdk.lock:
+                self.environment.canvas.widget.queue_draw_area(*(self.lastDraw))
+                self.environment.canvas.widget.queue_draw_area(*self.drawingBoundingBox())
         except:
             pass # probably there is no canvas to draw to right now
     
@@ -75,6 +78,7 @@ class Environment(object):
         self.robots=[]
         self.items=[]
         self.background = None
+
 
 class Gui(object):
     def delete_evt(self,widget,event,data=None):
@@ -169,20 +173,19 @@ class Gui(object):
         self.vpane.set_position(0)
         self.hpane.set_position(self.hpane.get_property('max-position'))
     
-    def save_code(self,force=False):
+    def save_code(self,forceGrab=False):
         srcBuffer = self.codeArea.get_buffer()
         modified = srcBuffer.get_modified()
-        if modified or force:
+        if modified or forceGrab:
             source = srcBuffer.get_text(*srcBuffer.get_bounds())
             source = source.replace('\r\n','\n')
             
-            if source[-1] != '\n':
+            if source and source[-1] != '\n':
                 source += '\n'
             if modified:
                 with open('source.py','wb') as f:
                     f.write(source)
                 srcBuffer.set_modified(False)
-                self.codeModified = True
         else:
             source=None
         
@@ -209,7 +212,7 @@ class Gui(object):
             traceback.print_exc(file=sys.__stdout__)
         else:
             text = text.replace('\r\n','\n')
-            gobject.idle_add(self.set_code, text, undoable)
+            gtkExec(self.set_code, text, undoable)
     
     def set_code(self,code,undoable=True):
         srcBuffer = self.codeArea.get_buffer()
