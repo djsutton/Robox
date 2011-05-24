@@ -47,7 +47,7 @@ class GtkPythonConsole(gtk.TextView):
         self.guiThread = currentThread() # best guess
         self.mainThread = list(t for t in enumerateThreads() if type(t) == _MainThread)[0] # best guess
         
-        self.set_wrap_mode(gtk.WRAP_WORD)
+        self.set_wrap_mode(gtk.WRAP_WORD_CHAR)
         self.set_editable(False)
         
         self.add_events(gtk.gdk.KEY_PRESS)
@@ -56,12 +56,15 @@ class GtkPythonConsole(gtk.TextView):
         self.connect_after('populate-popup', self.popupCallback)
         self.connect('destroy', self.stopInteracting)
         self.connect('set-scroll-adjustments', self.adjustmentsCallback)
+        self.connect('focus-in-event', self.focusInCallback)
+        self.connect('focus-out-event', self.focusOutCallback)
         self.set_cursor_visible(False)
         
         self.buffer = buffer or self.get_buffer()
         self.vadj = None
         
         self.scrollToEnd = True;
+        self.cursorTimeoutID = None
         self.blockCursor = self.buffer.create_tag('cursor', background='black',foreground='white')
         
         self.pendingCR = False
@@ -100,8 +103,6 @@ class GtkPythonConsole(gtk.TextView):
         self.running = Event()
     
     def start(self,main=True):
-        
-        gobject.timeout_add(600,self.toggleCursor)
         
         if main:
             self.interactiveThread = currentThread()
@@ -692,6 +693,19 @@ class GtkPythonConsole(gtk.TextView):
             writeEvt.set()
         return False
     
+    def focusInCallback(self,widget,event,data=None):
+        self.blockCursor.props.background = 'black'
+        self.blockCursor.props.foreground = 'white'
+        self.cursorTimeoutID = gobject.timeout_add(600,self.toggleCursor)
+    
+    def focusOutCallback(self,widget,event,data=None):
+        if self.cursorTimeoutID:
+            gobject.source_remove(self.cursorTimeoutID)
+        self.blockCursor.props.background = 'gray'
+        self.blockCursor.props.foreground = 'black'
+        self.cursorOn = True
+        self.updateCursor(False)
+    
     def updateCursor(self, clear=True):
         
         cursor = self.buffer.get_end_iter()
@@ -715,7 +729,8 @@ class GtkPythonConsole(gtk.TextView):
     
     def toggleCursor(self):
         self.cursorOn = not self.cursorOn
-        self.updateCursor(False)
+        with gtk.gdk.lock:
+            self.updateCursor(False)
         return True;
     
     def sendSigint(self):

@@ -172,6 +172,7 @@ class Gui(object):
         
         self.vpane.set_position(0)
         self.hpane.set_position(self.hpane.get_property('max-position'))
+        self.console.grab_focus()
     
     def save_code(self,forceGrab=False):
         srcBuffer = self.codeArea.get_buffer()
