@@ -41,10 +41,12 @@ class Robot(object):
         return self.environment.canvas
     
     def queueRedraw(self):
+        gtkExec(self.queue_gtk_draw, [self.lastDraw,self.drawingBoundingBox()])
+    
+    def queue_gtk_draw(self, boxes):
         try:
-            with gtk.gdk.lock:
-                self.environment.canvas.widget.queue_draw_area(*(self.lastDraw))
-                self.environment.canvas.widget.queue_draw_area(*self.drawingBoundingBox())
+            for box in boxes:
+                self.environment.canvas.widget.queue_draw_area(*box)
         except:
             pass # probably there is no canvas to draw to right now
     
