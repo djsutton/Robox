@@ -6,9 +6,6 @@ def goRobot(r):
             r.x=-50
         if r.y > 50:
             r.y=-50
-            
-        r.x += 1
-        r.y += 2
-        r.heading += 3
-        r.queueRedraw()
+        
+        r.pose = r.x+1, r.y+2, r.heading+3
         time.sleep(1/30.0)

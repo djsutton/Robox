@@ -27,9 +27,9 @@ class Robot(object):
     def __init__(self, x=0, y=0, heading=0, env = None):
         global environment
         
-        self.x = float(x)
-        self.y = float(y)
-        self.heading = heading
+        object.__setattr__(self,'x',float(x))
+        object.__setattr__(self,'y',float(y))
+        object.__setattr__(self,'heading',float(heading))
         self.xextent = 10.0
         self.yextent = 10.0
         self.penDown = False
@@ -42,21 +42,54 @@ class Robot(object):
         self.environment = env
         self.environment.robots.append(self)
         
+        self.doodle = cairo.Context(cairo.ImageSurface(cairo.FORMAT_ARGB32, 0, 0))
+        
         self.lastDraw = self.drawingBoundingBox()
-        self.lastX = self.x
-        self.lastY = self.y
-        self.queueRedraw()
+        self.lastX = x
+        self.lastY = y
+        self.pose = x, y, heading
+    
+    def __setattr__(self, name, value):
+        
+        if name == 'x' or name == 'y' or name == 'heading':
+            value = float(value)
+        elif name == 'point':
+            x,y = value
+            value = float(x), float(y)
+        elif name == 'pose':
+            x,y,heading = value
+            value = float(x), float(y), float(heading)
+        
+        object.__setattr__(self, name, value)
+        
+        if name == 'x' or name == 'y':
+            object.__setattr__(self, 'point', (self.x, self.y))
+            object.__setattr__(self, 'pose', (self.x, self.y, self.heading))
+            self.updateGraphics()
+        elif name == 'heading':
+            object.__setattr__(self, 'pose', (self.x, self.y, self.heading))
+            self.updateGraphics()
+        elif name == 'point':
+            x,y = value
+            object.__setattr__(self, 'x', x)
+            object.__setattr__(self, 'y', y)
+            object.__setattr__(self, 'pose', (x, y, self.heading))
+            self.updateGraphics()
+        elif name == 'pose':
+            x,y,heading = value
+            object.__setattr__(self, 'x', x)
+            object.__setattr__(self, 'y', y)
+            object.__setattr__(self, 'point', (x, y))
+            object.__setattr__(self, 'heading', heading)
+            self.updateGraphics()
     
     def pd(self):
         if not self.penDown:
             self.penDown = True
             
-            temp_surface = cairo.SVGSurface(None, 0, 0)
-            ctx = cairo.Context(temp_surface)
-            ctx.move_to(self.x, self.y)
-            self.paths.append(ctx.copy_path())
-            del ctx
-            del temp_surface
+            self.doodle.new_path()
+            self.doodle.move_to(self.x, self.y)
+            self.paths.append(self.doodle.copy_path())
     
     def pu(self):
         if self.penDown:
@@ -143,15 +176,24 @@ class Robot(object):
                 ctx.new_sub_path()
                 ctx.append_path(path)
             
-            if self.penDown and (self.x,self.y) != (self.lastX,self.lastY):
-                ctx.line_to(self.x,self.y)
-                self.paths[-1] = ctx.copy_path()
-            
             ctx.set_source_rgba(0, 0, 0, 1)
             ctx.stroke()
         
         self.lastDraw=self.drawingBoundingBox()
+    
+    def updateGraphics(self):
+        if self.paths and self.penDown and (self.x,self.y) != (self.lastX,self.lastY):
+            
+            for path in self.paths:
+                self.doodle.new_path()
+                self.doodle.append_path(path)
+            
+            self.doodle.line_to(self.x,self.y)
+            self.paths[-1] = self.doodle.copy_path()
+        
         self.lastX, self.lastY = self.x, self.y
+        
+        self.queueRedraw()
 
 
 class Environment(object):
