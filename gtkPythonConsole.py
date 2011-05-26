@@ -11,6 +11,8 @@ import gtk
 import gobject
 import pango
 
+ExceptionHideFiles = [__file__]
+
 if sys.platform == 'win32':
     kernel32 = ctypes.windll.kernel32
     CTRL_C_EVENT = 0     # constants from http://msdn.microsoft.com/en-us/library/ms683155%28VS.85%29.aspx
@@ -267,7 +269,7 @@ class GtkPythonConsole(gtk.TextView):
                 if filename == '<code area>':
                     line = self.source.split('\n')[lineno-1]
                     tblist[i] = (filename, lineno, function, line)
-                if filename in __file__:
+                if filename in ';'.join(ExceptionHideFiles):
                     del tblist[i:]
                 i += 1
             

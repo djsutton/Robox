@@ -15,26 +15,32 @@ import cairo
 import gtksourceview2
 
 import gtkPythonConsole
+gtkPythonConsole.ExceptionHideFiles.append(__file__)
 gtkExec = gtkPythonConsole.gtkExec
 
 if not os.getcwd() in sys.path:
     sys.path = [os.getcwd()] + sys.path
 
+environment = None
 
 class Robot(object):
-    def __init__(self,x=0,y=0,heading=0):
+    def __init__(self, x=0, y=0, heading=0, env = None):
         global environment
         
         self.x = float(x)
         self.y = float(y)
         self.heading = heading
-        self.xextent = 10
-        self.yextent = 10
-        self.gc = None
+        self.xextent = 10.0
+        self.yextent = 10.0
         self.penDown = False
+        self.paths = []
+        self.drawing = None
         
-        environment.robots.append(self)
-        self.environment = environment
+        if env == None:
+            env = environment
+        
+        self.environment = env
+        self.environment.robots.append(self)
         
         self.lastDraw = self.drawingBoundingBox()
         self.lastX = self.x
@@ -42,10 +48,19 @@ class Robot(object):
         self.queueRedraw()
     
     def pd(self):
-        self.penDown = True
+        if not self.penDown:
+            self.penDown = True
+            
+            temp_surface = cairo.SVGSurface(None, 0, 0)
+            ctx = cairo.Context(temp_surface)
+            ctx.move_to(self.x, self.y)
+            self.paths.append(ctx.copy_path())
+            del ctx
+            del temp_surface
     
     def pu(self):
-        self.penDown = False
+        if self.penDown:
+            self.penDown = False
     
     def getCanvas(self):
         return self.environment.canvas
@@ -55,23 +70,20 @@ class Robot(object):
     
     def queueRedraw(self):
         box1 = self.lastDraw
-        box2 = self.drawingBoundingBox()
+        x,y,w,h = self.drawingBoundingBox()
+        box2 = (x-10,y-10,w+20,h+20)
         if self.penDown:
             minx = min(box1[0],box2[0])
             miny = min(box1[1],box2[1])
             maxx = max(box1[0]+box1[2], box2[0]+box2[2])
             maxy = max(box1[1]+box1[3], box2[1]+box2[3])
-            with gtk.gdk.lock:
-                gtkExec(self.queue_gtk_draw,[(minx,miny, maxx-minx, maxy-miny)])
+            gtkExec(self.queue_gtk_draw,[(minx,miny, maxx-minx, maxy-miny)])
         else:
             gtkExec(self.queue_gtk_draw,[box1,box2])
     
     def queue_gtk_draw(self, boxes):
-        try:
-            for box in boxes:
-                self.environment.graphics.queue_draw_area(*box)
-        except:
-            pass # probably there is no canvas to draw to right now
+        for box in boxes:
+            self.environment.graphics.queue_draw_area(*box)
     
     def boundingBox(self):
         return self.x-self.xextent, self.y-self.yextent, 2*self.xextent, 2*self.yextent
@@ -80,16 +92,16 @@ class Robot(object):
         canvas = self.getCanvas()
         w,h = canvas.get_width(),canvas.get_height()
         drawx, drawy = self.x+w/2.0, h/2.0-self.y
-        x,y,width,height = (drawx-self.xextent, drawy-self.yextent,2*self.xextent,2*self.yextent)
-        return int(round(x-1)),int(round(y-1)),int(round(width+2)),int(round(height+2))
+        maxExtent = max(self.xextent, self.yextent)
+        x,y,size = (drawx-maxExtent, drawy-maxExtent,2*maxExtent)
+        intSize = int(round(size+2))
+        return int(round(x-1)),int(round(y-1)),intSize,intSize
     
     def redraw(self, canvas, x,y,ew,eh):
         w,h = canvas.get_width(),canvas.get_height()
         drawx, drawy = self.x+w/2.0, h/2.0-self.y
         if (((x < drawx+self.xextent) or (x+ew > drawx-self.xextent)) and
             ((y < drawy+self.yextent) or (y+eh > drawy-self.yextent))):
-            if self.gc:
-                gc = self.gc
             self.draw(canvas,x,y,ew,eh)
     
     def draw(self, canvas,ex,ey,ew,eh):
@@ -99,23 +111,42 @@ class Robot(object):
         
         ctx = cairo.Context(canvas)
         ctx.set_line_width(1)
+        ctx.set_line_cap(cairo.LINE_CAP_ROUND)
         
-        ctx.arc(drawx,drawy,10,0,2*pi)
+        ctx.save()
+        
+        ctx.translate(drawx,drawy)
+        ctx.rotate(self.heading*pi/180)
+        ctx.scale(self.xextent,-self.yextent)
+        
+        ctx.arc(0,0,1,0,2*pi)
         ctx.set_source_rgba(1, 1, 1, 1)
         ctx.fill_preserve()
         
-        ctx.move_to(drawx,drawy)
-        ctx.rel_line_to(self.xextent*sin(self.heading*pi/180), -self.yextent*cos(self.heading*pi/180))
+        ctx.move_to(0,0)
+        ctx.rel_line_to(0, 1)
         
-        ctx.set_source_rgba(0, 0, 0, 1)
+        ctx.restore()
+        ctx.set_source_rgba(0,0,0,1)
         ctx.stroke()
         del(ctx)
         
-        if self.penDown:
+        if self.paths:
             ctx = cairo.Context(self.getDrawing())
             ctx.set_line_width(1)
-            ctx.move_to(drawLastX,drawLastY)
-            ctx.line_to(drawx, drawy)
+            ctx.set_line_cap(cairo.LINE_CAP_ROUND)
+            
+            ctx.translate(w/2.0,h/2.0)
+            ctx.scale(1,-1)
+            
+            for path in self.paths:
+                ctx.new_sub_path()
+                ctx.append_path(path)
+            
+            if self.penDown and (self.x,self.y) != (self.lastX,self.lastY):
+                ctx.line_to(self.x,self.y)
+                self.paths[-1] = ctx.copy_path()
+            
             ctx.set_source_rgba(0, 0, 0, 1)
             ctx.stroke()
         
@@ -194,16 +225,17 @@ class Gui(object):
         self.graphics.connect("configure-event", self.configure_graphics)
         self.graphics.connect("expose-event", self.push_graphics)
         
-        environment = Environment()
-        environment.graphics = self.graphics
+        self.environment = Environment()
+        self.environment.graphics = self.graphics
         self.canvas = cairo.ImageSurface(cairo.FORMAT_ARGB32, 1, 1)
-        environment.canvas = self.canvas
+        self.environment.canvas = self.canvas
         self.drawing = cairo.ImageSurface(cairo.FORMAT_ARGB32, 1, 1)
-        environment.drawing = self.drawing
+        self.environment.drawing = self.drawing
         self.background = cairo.ImageSurface(cairo.FORMAT_ARGB32, 1, 1)
-        environment.background = self.background
+        self.environment.background = self.background
+        environment = self.environment
         
-        locals={'gui':self,'Gui':Gui, 'environment':environment, 'Robot':Robot}
+        locals={'gui':self,'Gui':Gui, 'environment':self.environment, 'Robot':Robot}
         self.console = gtkPythonConsole.GtkPythonConsole(message='Robo Interacive Python Interpreter', locals=locals, getSource=self.get_code)
         
         self.consoleSw = gtk.ScrolledWindow(hadjustment=None, vadjustment=None)
@@ -319,13 +351,13 @@ class Gui(object):
         # TODO: resize canvas,drawing,background here instead of recreating
         x,y,w,h = widget.get_allocation()
         self.canvas = cairo.ImageSurface(cairo.FORMAT_ARGB32, w, h)
-        environment.canvas = self.canvas
+        self.environment.canvas = self.canvas
         self.drawing = cairo.ImageSurface(cairo.FORMAT_ARGB32, w, h)
-        environment.drawing = self.drawing
+        self.environment.drawing = self.drawing
         self.background = cairo.ImageSurface(cairo.FORMAT_ARGB32, w, h)
-        environment.background = self.background
+        self.environment.background = self.background
         self.backBuffer = gtk.gdk.Pixmap(widget.window, w, h, depth=-1)
-        environment.graphics = self.graphics
+        self.environment.graphics = self.graphics
     
     def push_graphics(self,widget,event):
         
@@ -334,8 +366,10 @@ class Gui(object):
         # TODO: clear canvas to transparent instead of re-creating it
         wx,wy,ww,wh = widget.get_allocation()
         self.canvas = cairo.ImageSurface(cairo.FORMAT_ARGB32, ww, wh)
-        environment.canvas = self.canvas
-        for obj in environment.robots+environment.items:
+        self.environment.canvas = self.canvas
+        self.drawing = cairo.ImageSurface(cairo.FORMAT_ARGB32, ww, wh)
+        self.environment.drawing = self.drawing
+        for obj in self.environment.robots+self.environment.items:
             obj.redraw(self.canvas, x,y,w,h)
         
         # paint these to an offscreen pixmap and then swap buffers
