@@ -51,14 +51,16 @@ class Robot(object):
     
     def __setattr__(self, name, value):
         
-        if name == 'x' or name == 'y' or name == 'heading':
+        if name == 'x' or name == 'y':
             value = float(value)
+        elif name == 'heading':
+            value = float(value)%360
         elif name == 'point':
             x,y = value
             value = float(x), float(y)
         elif name == 'pose':
             x,y,heading = value
-            value = float(x), float(y), float(heading)
+            value = float(x), float(y), float(heading)%360
         
         object.__setattr__(self, name, value)
         
@@ -95,6 +97,31 @@ class Robot(object):
         if self.penDown:
             self.penDown = False
     
+    def fd(self, distance):
+        dist = float(distance)
+        self.point = self.x+dist*sin(self.heading*pi/180.0), self.y+dist*cos(self.heading*pi/180.0)
+    
+    def rt(self, degrees):
+        self.heading += float(degrees)
+    
+    def lt(self, degrees):
+        self.heading -= float(degrees)
+    
+    def cg(self, zero=False):
+        pen = False
+        if self.penDown:
+            pen = True
+            self.pu()
+        self.paths=[]
+        
+        if zero:
+            self.pose=(0,0,0)
+        
+        if pen:
+            self.pd()
+        
+        gtkExec(self.queue_gtk_draw) # redraw entire area
+    
     def getCanvas(self):
         return self.environment.canvas
     
@@ -114,9 +141,12 @@ class Robot(object):
         else:
             gtkExec(self.queue_gtk_draw,[box1,box2])
     
-    def queue_gtk_draw(self, boxes):
-        for box in boxes:
-            self.environment.graphics.queue_draw_area(*box)
+    def queue_gtk_draw(self, boxes=None):
+        if boxes:
+            for box in boxes:
+                self.environment.graphics.queue_draw_area(*box)
+        else:
+            self.environment.graphics.queue_draw()
     
     def boundingBox(self):
         return self.x-self.xextent, self.y-self.yextent, 2*self.xextent, 2*self.yextent
