@@ -3,7 +3,7 @@
 import sys, copy, time, os, traceback
 
 from threading import Thread, Event, currentThread
-from math import pi,atan2,sin,cos
+from math import pi,atan2,sin,cos,fabs
 
 import pygtk
 pygtk.require('2.0')
@@ -49,6 +49,14 @@ class Robot(object):
         self.lastY = y
         self.pose = x, y, heading
     
+    def remove(self):
+        try:
+            self.environment.robots.remove(self)
+        except ValueError:
+            raise ValueError('Robot not found in environment')
+        
+        gtkExec(self.queue_gtk_draw) # redraw entire area TODO: limit this to path area + robot area
+    
     def __setattr__(self, name, value):
         
         if name == 'x' or name == 'y':
@@ -61,6 +69,9 @@ class Robot(object):
         elif name == 'pose':
             x,y,heading = value
             value = float(x), float(y), float(heading)%360
+        elif name == 'paths':
+            if type(value) != list:
+                value == list(value)
         
         object.__setattr__(self, name, value)
         
@@ -84,14 +95,18 @@ class Robot(object):
             object.__setattr__(self, 'point', (x, y))
             object.__setattr__(self, 'heading', heading)
             self.updateGraphics()
+        elif name == 'paths':
+            if value == [] and self.penDown:
+                self.pu()
+                self.pd()
     
     def pd(self):
         if not self.penDown:
             self.penDown = True
             
-            self.doodle.new_path()
-            self.doodle.move_to(self.x, self.y)
-            self.paths.append(self.doodle.copy_path())
+            path = Path()
+            path.add(self.x, self.y)
+            self.paths.append(path)
     
     def pu(self):
         if self.penDown:
@@ -120,7 +135,7 @@ class Robot(object):
         if pen:
             self.pd()
         
-        gtkExec(self.queue_gtk_draw) # redraw entire area
+        gtkExec(self.queue_gtk_draw) # redraw entire area TODO: limit this to path area + robot area
     
     def getCanvas(self):
         return self.environment.canvas
@@ -169,8 +184,9 @@ class Robot(object):
     
     def draw(self, canvas,ex,ey,ew,eh):
         w,h = canvas.get_width(),canvas.get_height()
-        drawx, drawy = self.x+w/2.0, h/2.0-self.y
-        drawLastX,drawLastY = self.lastX+w/2.0, h/2.0-self.lastY
+        cx, cy = w/2.0, h/2.0
+        drawx, drawy = self.x+cx, cy-self.y
+        drawLastX,drawLastY = self.lastX+cx, cy-self.lastY
         
         ctx = cairo.Context(canvas)
         ctx.set_line_width(1)
@@ -196,34 +212,50 @@ class Robot(object):
         
         if self.paths:
             ctx = cairo.Context(self.getDrawing())
-            ctx.set_line_width(1)
-            ctx.set_line_cap(cairo.LINE_CAP_ROUND)
-            
-            ctx.translate(w/2.0,h/2.0)
-            ctx.scale(1,-1)
             
             for path in self.paths:
-                ctx.new_sub_path()
-                ctx.append_path(path)
-            
-            ctx.set_source_rgba(0, 0, 0, 1)
-            ctx.stroke()
+                path.draw(ctx, cx, cy, w, h)
         
         self.lastDraw=self.drawingBoundingBox()
     
     def updateGraphics(self):
         if self.paths and self.penDown and (self.x,self.y) != (self.lastX,self.lastY):
             
-            for path in self.paths:
-                self.doodle.new_path()
-                self.doodle.append_path(path)
-            
-            self.doodle.line_to(self.x,self.y)
-            self.paths[-1] = self.doodle.copy_path()
+            self.paths[-1].add(self.x, self.y)
         
         self.lastX, self.lastY = self.x, self.y
         
         self.queueRedraw()
+
+
+class Path(object):
+    def __init__(self):
+        self.points=[]
+        
+        self.pathCtx = cairo.Context(cairo.ImageSurface(cairo.FORMAT_ARGB32, 0, 0))
+        
+        self.path = self.pathCtx.copy_path()
+    
+    def add(self, x, y):
+        self.points.append((x,y))
+        
+        pathX, pathY = self.pathCtx.get_current_point()
+        if not self.pathCtx.has_current_point() or fabs(pathX-x) > .7071 or fabs(pathY-y) > .7071:
+            self.pathCtx.line_to(x,y)
+            self.path = self.pathCtx.copy_path()
+    
+    def draw(self, ctx, zeroX, zeroY, canvasW, canvasH):
+        ctx.set_line_width(1)
+        ctx.set_line_cap(cairo.LINE_CAP_ROUND)
+        
+        ctx.translate(zeroX, zeroY)
+        ctx.scale(1,-1)
+        
+        ctx.new_path()
+        ctx.append_path(self.path)
+        
+        ctx.set_source_rgba(0, 0, 0, 1)
+        ctx.stroke()
 
 
 class Environment(object):
