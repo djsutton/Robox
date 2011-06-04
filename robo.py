@@ -30,10 +30,11 @@ class Robot(object):
         object.__setattr__(self,'x',float(x))
         object.__setattr__(self,'y',float(y))
         object.__setattr__(self,'heading',float(heading))
-        self.xextent = 10.0
-        self.yextent = 10.0
+        object.__setattr__(self,'size',10.0)
+        self.xextent = self.size*1.05
+        self.yextent = self.size*1.05
         self.penDown = False
-        self.paths = []
+        object.__setattr__(self,'paths',[])
         self.drawing = None
         
         if env == None:
@@ -59,7 +60,7 @@ class Robot(object):
     
     def __setattr__(self, name, value):
         
-        if name == 'x' or name == 'y':
+        if name == 'x' or name == 'y' or name == 'size':
             value = float(value)
         elif name == 'heading':
             value = float(value)%360
@@ -99,6 +100,11 @@ class Robot(object):
             if value == [] and self.penDown:
                 self.pu()
                 self.pd()
+            self.updateGraphics()
+        elif name == 'size':
+            self.xextent = value*1.05
+            self.yextent = value*1.05
+            self.updateGraphics()
     
     def pd(self):
         if not self.penDown:
@@ -145,8 +151,7 @@ class Robot(object):
     
     def queueRedraw(self):
         box1 = self.lastDraw
-        x,y,w,h = self.drawingBoundingBox()
-        box2 = (x-10,y-10,w+20,h+20)
+        box2 = self.drawingBoundingBox()
         if self.penDown:
             minx = min(box1[0],box2[0])
             miny = min(box1[1],box2[1])
@@ -172,17 +177,17 @@ class Robot(object):
         drawx, drawy = self.x+w/2.0, h/2.0-self.y
         maxExtent = max(self.xextent, self.yextent)
         x,y,size = (drawx-maxExtent, drawy-maxExtent,2*maxExtent)
-        intSize = int(round(size+2))
-        return int(round(x-1)),int(round(y-1)),intSize,intSize
+        intSize = int(round(size+2))+20
+        return int(round(x-1))-10,int(round(y-1))-10,intSize,intSize
     
     def redraw(self, canvas, x,y,ew,eh):
         w,h = canvas.get_width(),canvas.get_height()
         drawx, drawy = self.x+w/2.0, h/2.0-self.y
         if (((x < drawx+self.xextent) or (x+ew > drawx-self.xextent)) and
             ((y < drawy+self.yextent) or (y+eh > drawy-self.yextent))):
-            self.draw(canvas,x,y,ew,eh)
+            self.render(canvas,x,y,ew,eh)
     
-    def draw(self, canvas,ex,ey,ew,eh):
+    def render(self, canvas,ex,ey,ew,eh):
         w,h = canvas.get_width(),canvas.get_height()
         cx, cy = w/2.0, h/2.0
         drawx, drawy = self.x+cx, cy-self.y
@@ -196,18 +201,13 @@ class Robot(object):
         
         ctx.translate(drawx,drawy)
         ctx.rotate(self.heading*pi/180)
-        ctx.scale(self.xextent,-self.yextent)
+        ctx.scale(1,-1)
+        ctx.save()
         
-        ctx.arc(0,0,1,0,2*pi)
-        ctx.set_source_rgba(1, 1, 1, 1)
-        ctx.fill_preserve()
-        
-        ctx.move_to(0,0)
-        ctx.rel_line_to(0, 1)
+        self.draw(ctx)
         
         ctx.restore()
-        ctx.set_source_rgba(0,0,0,1)
-        ctx.stroke()
+        ctx.restore()
         del(ctx)
         
         if self.paths:
@@ -217,6 +217,20 @@ class Robot(object):
                 path.draw(ctx, cx, cy, w, h)
         
         self.lastDraw=self.drawingBoundingBox()
+    
+    def draw(self,ctx):
+        scale = self.size/10.0
+        ctx.scale(scale,scale)
+        
+        ctx.arc(0,0,10,0,2*pi)
+        ctx.set_source_rgba(1, 1, 1, 1)
+        ctx.fill_preserve()
+        
+        ctx.move_to(0,0)
+        ctx.rel_line_to(0, 10)
+        
+        ctx.set_source_rgba(0,0,0,1)
+        ctx.stroke()
     
     def updateGraphics(self):
         if self.paths and self.penDown and (self.x,self.y) != (self.lastX,self.lastY):
@@ -339,7 +353,7 @@ class Gui(object):
         self.environment.background = self.background
         environment = self.environment
         
-        locals={'gui':self,'Gui':Gui, 'environment':self.environment, 'Robot':Robot}
+        locals={'gui':self, 'Gui':Gui, 'environment':self.environment, 'Robot':Robot, 'gtkExec':gtkExec}
         self.console = gtkPythonConsole.GtkPythonConsole(message='Robo Interacive Python Interpreter', locals=locals, getSource=self.get_code)
         
         self.consoleSw = gtk.ScrolledWindow(hadjustment=None, vadjustment=None)
