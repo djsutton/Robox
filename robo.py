@@ -100,7 +100,7 @@ class Robot(object):
             if value == [] and self.penDown:
                 self.pu()
                 self.pd()
-            self.updateGraphics()
+            gtkExec(self.queue_gtk_draw) # redraw entire area
         elif name == 'size':
             self.xextent = value*1.05
             self.yextent = value*1.05
@@ -110,8 +110,7 @@ class Robot(object):
         if not self.penDown:
             self.penDown = True
             
-            path = Path()
-            path.add(self.x, self.y)
+            path = Path(self.x, self.y)
             self.paths.append(path)
     
     def pu(self):
@@ -141,7 +140,7 @@ class Robot(object):
         if pen:
             self.pd()
         
-        gtkExec(self.queue_gtk_draw) # redraw entire area TODO: limit this to path area + robot area
+        gtkExec(self.queue_gtk_draw) # redraw entire area
     
     def getCanvas(self):
         return self.environment.canvas
@@ -214,7 +213,9 @@ class Robot(object):
             ctx = cairo.Context(self.getDrawing())
             
             for path in self.paths:
+                ctx.save()
                 path.draw(ctx, cx, cy, w, h)
+                ctx.restore()
         
         self.lastDraw=self.drawingBoundingBox()
     
@@ -233,7 +234,7 @@ class Robot(object):
         ctx.stroke()
     
     def updateGraphics(self):
-        if self.paths and self.penDown and (self.x,self.y) != (self.lastX,self.lastY):
+        if self.paths and self.penDown:
             
             self.paths[-1].add(self.x, self.y)
         
@@ -243,18 +244,20 @@ class Robot(object):
 
 
 class Path(object):
-    def __init__(self):
-        self.points=[]
+    def __init__(self, x, y):
+        self.points=[(x,y)]
         
         self.pathCtx = cairo.Context(cairo.ImageSurface(cairo.FORMAT_ARGB32, 0, 0))
+        self.pathCtx.move_to(x,y)
         
         self.path = self.pathCtx.copy_path()
     
     def add(self, x, y):
-        self.points.append((x,y))
-        
-        pathX, pathY = self.pathCtx.get_current_point()
-        if not self.pathCtx.has_current_point() or fabs(pathX-x) > .7071 or fabs(pathY-y) > .7071:
+        if (x,y) != self.points[-1]:
+            self.points.append((x,y))
+            
+            pathX, pathY = self.pathCtx.get_current_point()
+            
             self.pathCtx.line_to(x,y)
             self.path = self.pathCtx.copy_path()
     
