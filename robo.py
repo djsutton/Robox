@@ -179,14 +179,14 @@ class Robot(object):
         intSize = int(round(size+2))+20
         return int(round(x-1))-10,int(round(y-1))-10,intSize,intSize
     
-    def redraw(self, canvas, x,y,ew,eh):
+    def redraw(self, (canvas,drawing), x,y,ew,eh):
         w,h = canvas.get_width(),canvas.get_height()
         drawx, drawy = self.x+w/2.0, h/2.0-self.y
         if (((x < drawx+self.xextent) or (x+ew > drawx-self.xextent)) and
             ((y < drawy+self.yextent) or (y+eh > drawy-self.yextent))):
-            self.render(canvas,x,y,ew,eh)
+            self.render((canvas,drawing),x,y,ew,eh)
     
-    def render(self, canvas,ex,ey,ew,eh):
+    def render(self, (canvas,drawing),ex,ey,ew,eh):
         w,h = canvas.get_width(),canvas.get_height()
         cx, cy = w/2.0, h/2.0
         drawx, drawy = self.x+cx, cy-self.y
@@ -210,7 +210,7 @@ class Robot(object):
         del(ctx)
         
         if self.paths:
-            ctx = cairo.Context(self.getDrawing())
+            ctx = cairo.Context(drawing)
             
             for path in self.paths:
                 ctx.save()
@@ -255,8 +255,6 @@ class Path(object):
     def add(self, x, y):
         if (x,y) != self.points[-1]:
             self.points.append((x,y))
-            
-            pathX, pathY = self.pathCtx.get_current_point()
             
             self.pathCtx.line_to(x,y)
             self.path = self.pathCtx.copy_path()
@@ -339,12 +337,34 @@ class Gui(object):
         self.codeSw.set_policy(gtk.POLICY_AUTOMATIC, gtk.POLICY_AUTOMATIC)
         self.codeSw.add(self.codeArea)
         
-        self.load_code(undoable = False)
         self.codeModified = True
         
         self.graphics = gtk.DrawingArea()
+        self.graphics.set_can_focus(True)
         self.graphics.connect("configure-event", self.configure_graphics)
         self.graphics.connect("expose-event", self.push_graphics)
+        self.graphics.connect('key-press-event',self.graphics_key_press)
+        self.graphics.connect('key-release-event',self.graphics_key_release)
+        self.graphics.connect('button-press-event',self.graphics_button_press)
+        self.graphics.connect('button-release-event',self.graphics_button_release)
+        self.graphics.connect('motion_notify_event', self.graphics_mouse_motion)
+        
+#        self.readcharLock = RLock() # lock related to readchar processing
+        
+        self.graphics.add_events(gtk.gdk.EXPOSURE_MASK
+                               | gtk.gdk.KEY_PRESS_MASK  
+                               | gtk.gdk.KEY_RELEASE_MASK
+                               | gtk.gdk.BUTTON_PRESS_MASK  
+                               | gtk.gdk.BUTTON_RELEASE_MASK
+                               | gtk.gdk.POINTER_MOTION_MASK
+                               | gtk.gdk.POINTER_MOTION_HINT_MASK)
+        
+        self.resize_handlers = []
+        self.key_press_handlers = []
+        self.key_release_handlers = []
+        self.button_press_handlers = []
+        self.button_release_handlers = []
+        self.mouse_move_handlers = []
         
         self.environment = Environment()
         self.environment.graphics = self.graphics
@@ -376,7 +396,7 @@ class Gui(object):
         self.vpane.set_position(0)
         self.hpane.set_position(self.hpane.get_property('max-position'))
     
-    def save_code(self,forceGrab=False):
+    def save_code(self,forceGrab=False,filename='source.py'):
         srcBuffer = self.codeArea.get_buffer()
         modified = srcBuffer.get_modified()
         if modified or forceGrab:
@@ -386,7 +406,7 @@ class Gui(object):
             if source and source[-1] != '\n':
                 source += '\n'
             if modified:
-                with open('source.py','wb') as f:
+                with open(filename,'wb') as f:
                     f.write(source)
                 srcBuffer.set_modified(False)
         else:
@@ -395,11 +415,12 @@ class Gui(object):
         return source
     
     def get_code(self):
-        source = self.save_code(self.codeModified)
+        source = self.save_code(self.codeModified, self.filename)
         self.codeModified = False
         return source
     
     def load_code(self,filename='source.py',undoable=True):
+        self.filename = filename
         loadThread = Thread(target=self.asynchronus_load_code, name='LoadCode', args=(filename, undoable))
         loadThread.daemon = True
         loadThread.start()
@@ -425,9 +446,37 @@ class Gui(object):
         
         srcBuffer.set_text(code)
         srcBuffer.set_modified(False)
+        self.codeModified = True
         
         if not undoable:
             srcBuffer.end_not_undoable_action()
+    
+    def on_key_press(self,func):
+        self.key_press_handlers.append(func)
+    
+    def on_key_release(self,func):
+        self.key_release_handlers.append(func)
+    
+    def on_button_press(self,func):
+        self.button_press_handlers.append(func)
+    
+    def on_button_release(self,func):
+        self.button_release_handlers.append(func)
+    
+    def on_mouse_move(self,func):
+        self.mouse_move_handlers.append(func)
+    
+    def on_resize(self,func):
+        self.resize_handlers.append(func)
+    
+    def on_timer(self,func,miliseconds,*args,**kwargs):
+        gobject.timeout_add(miliseconds,func,*args,**kwargs)
+    
+    def readchar(self):
+        char = 0 #get keyval here
+        if char < 127:
+            char = chr(char)
+        return char
     
     def configure_window(self, window, event):
         x,y,w,h = window.get_allocation()
@@ -467,6 +516,38 @@ class Gui(object):
             minPos = widget.get_property('min-position')
             widget.proportion = (widget.get_position()-minPos)/float(maxPos-minPos)
     
+    def graphics_key_press(self, widget, event, data=None):
+        for func in self.key_press_handlers:
+            func(event)
+        return True
+    
+    def graphics_key_release(self, widget, event, data=None):
+        for func in self.key_release_handlers:
+            func(event)
+        return True
+    
+    def graphics_button_press(self, widget, event, data=None):
+        widget.grab_focus()
+        for func in self.button_press_handlers:
+            func(event)
+        return True
+        
+    def graphics_button_release(self, widget, event, data=None):
+        for func in self.button_release_handlers:
+            func(event)
+        return True
+    
+    def graphics_mouse_motion(self, widget, event, data=None):
+        if event.is_hint:
+            x, y, state = event.window.get_pointer()
+        else:
+            x = event.x
+            y = event.y
+            state = event.state
+        for func in self.mouse_move_handlers:
+            func((x,y,state))
+        return True
+    
     def configure_graphics(self, widget, event):
         # called when graphics area is resized, not just created
         # TODO: resize canvas,drawing,background here instead of recreating
@@ -479,6 +560,9 @@ class Gui(object):
         self.environment.background = self.background
         self.backBuffer = gtk.gdk.Pixmap(widget.window, w, h, depth=-1)
         self.environment.graphics = self.graphics
+        
+        for func in self.resize_handlers:
+            func((w,h),widget,event)
     
     def push_graphics(self,widget,event):
         
@@ -491,11 +575,11 @@ class Gui(object):
         self.drawing = cairo.ImageSurface(cairo.FORMAT_ARGB32, ww, wh)
         self.environment.drawing = self.drawing
         for obj in self.environment.robots+self.environment.items:
-            obj.redraw(self.canvas, x,y,w,h)
+            obj.redraw((self.canvas,self.drawing), x,y,w,h)
         
         # paint these to an offscreen pixmap and then swap buffers
         ctx = self.backBuffer.cairo_create()
-        ctx.set_source_rgba(1, 1, 1, 1)
+        ctx.set_source_rgba(1, 1, 1, 1) #clear to white
         ctx.paint()
         ctx.set_source_surface(self.background,0,0)
         ctx.paint()
@@ -539,6 +623,11 @@ def makeGui(guiReady=None, runGui=True):
 
 def main(consoleMain=True):
     
+    filename = None;
+    
+    if len(sys.argv) > 1:
+        filename = sys.argv[1]
+    
     guiReady = Event()
     guiReady.clear()
     
@@ -554,6 +643,11 @@ def main(consoleMain=True):
         guiReady.wait() # gui thread must fully initialize console component
         
         gui.console.mainThread = currentThread()
+        
+        if filename:
+            gui.load_code(filename, undoable=False)
+        else:
+            gui.load_code(undoable=False)
         
         if gui:
             gui.console.start(consoleMain)
