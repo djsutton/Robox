@@ -294,7 +294,7 @@ class Gui(object):
         self.height = 0
         self.window.connect('delete-event', self.delete_evt)
         self.window.connect('configure-event', self.configure_window)
-        self.window.set_title('Robo')
+        self.window.set_title('Robox')
         self.window.set_default_size(800, 600)
         
         self.hpane = gtk.HPaned()
