@@ -217,7 +217,6 @@ class GtkPythonConsole(gtk.TextView):
                 except (OverflowError, SyntaxError, ValueError) as e:
                     self.i2.showsyntaxerror('<code area>')
                 else:
-                    locals = self.i2.locals.copy()
                     oldSourceLocals = self.sourceLocals
                     
                     for key in oldSourceLocals:
@@ -228,12 +227,16 @@ class GtkPythonConsole(gtk.TextView):
                     
                     oldKeys = self.i2.locals.keys()
                     
+                    self.i2.locals['__name__'] = '__source__'
+                    
                     try:
                         exec code in self.i2.locals
                     except:
                         self.i2.showtraceback()
                     else:
                         self.sourceLocals=set(self.i2.locals.keys())-set(oldKeys)
+                    finally:
+                        self.i2.locals['__name__'] = '__main__'
             
             if not input:
                 try:
