@@ -121,6 +121,9 @@ class Robot(object):
         dist = float(distance)
         self.point = self.x+dist*sin(self.heading*pi/180.0), self.y+dist*cos(self.heading*pi/180.0)
     
+    def bk(self, distance):
+        self.fd(-distance)
+    
     def rt(self, degrees):
         self.heading += float(degrees)
     
@@ -278,6 +281,13 @@ class Environment(object):
         self.robots=[]
         self.items=[]
         self.background = None
+    
+    def cg(self):
+        for r in self.robots:
+            r.cg()
+    
+    def globalized_vars(self):
+        return {'cg': self.cg}
 
 
 class Gui(object):
@@ -376,8 +386,9 @@ class Gui(object):
         self.environment.background = self.background
         environment = self.environment
         
-        locals={'gui':self, 'Gui':Gui, 'environment':self.environment, 'Robot':Robot, 'gtkExec':gtkExec}
-        self.console = gtkPythonConsole.GtkPythonConsole(message='Robo Interacive Python Interpreter', locals=locals, getSource=self.get_code)
+        local_vars={'gui':self, 'Gui':Gui, 'environment':self.environment, 'Robot':Robot, 'gtkExec':gtkExec}
+        local_vars.update(environment.globalized_vars())
+        self.console = gtkPythonConsole.GtkPythonConsole(message='Robo Interacive Python Interpreter', locals=local_vars, getSource=self.get_code)
         
         self.consoleSw = gtk.ScrolledWindow(hadjustment=None, vadjustment=None)
         self.consoleSw.set_policy(gtk.POLICY_AUTOMATIC, gtk.POLICY_AUTOMATIC)
