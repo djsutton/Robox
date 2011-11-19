@@ -388,7 +388,7 @@ class Gui(object):
         
         local_vars={'gui':self, 'Gui':Gui, 'environment':self.environment, 'Robot':Robot, 'gtkExec':gtkExec}
         local_vars.update(environment.globalized_vars())
-        self.console = gtkPythonConsole.GtkPythonConsole(message='Robo Interacive Python Interpreter', locals=local_vars, getSource=self.get_code)
+        self.console = gtkPythonConsole.GtkPythonConsole(message='Robox Interacive Python Interpreter', locals=local_vars, getSource=self.get_code)
         
         self.consoleSw = gtk.ScrolledWindow(hadjustment=None, vadjustment=None)
         self.consoleSw.set_policy(gtk.POLICY_AUTOMATIC, gtk.POLICY_AUTOMATIC)
