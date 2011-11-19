@@ -1,0 +1,16 @@
+Robox: A graphical Python learning environment
+
+Robox is a grahical environment for python programming that lets people learn programming while having interesting and cool things happen on the screen. Robox is inspired by MicroWorlds
+
+Installation:
+    Linux:   Install Python 2.7 and your ditribution's version of pygtk and pygtksourceview 
+             Ubuntu: sudo apt-get install python-gtk2 python-gtksourceview2
+    
+    Windows: Install the Python 2.7 and PyGtk all-in-one installer from
+             http://ftp.gnome.org/pub/GNOME/binaries/win32/pygtk/2.24/pygtk-all-in-one-2.24.0.win32-py2.7.msi
+             **You must select the GtkSouceView component for installation**
+             
+
+
+Execution:
+    run the file robox.py
