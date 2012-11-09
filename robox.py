@@ -50,6 +50,7 @@ class Robot(object):
         self.lastX = x
         self.lastY = y
         self.pose = x, y, heading
+        self.sep_path_layer=True
     
     def remove(self):
         try:
@@ -211,10 +212,10 @@ class Robot(object):
         
         ctx.restore()
         ctx.restore()
-        del(ctx)
         
         if self.paths:
-            ctx = cairo.Context(drawing)
+            if self.sep_path_layer:
+                ctx = cairo.Context(drawing)
             
             for path in self.paths:
                 ctx.save()
