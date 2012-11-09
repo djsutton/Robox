@@ -463,22 +463,28 @@ class Gui(object):
             srcBuffer.end_not_undoable_action()
     
     def on_key_press(self,func):
-        self.key_press_handlers.append(func)
+        if func not in self.key_press_handlers:
+            self.key_press_handlers.append(func)
     
     def on_key_release(self,func):
-        self.key_release_handlers.append(func)
+        if func not in self.key_release_handlers:
+            self.key_release_handlers.append(func)
     
     def on_button_press(self,func):
-        self.button_press_handlers.append(func)
+        if func not in self.button_press_handlers:
+            self.button_press_handlers.append(func)
     
     def on_button_release(self,func):
-        self.button_release_handlers.append(func)
+        if func not in self.button_release_handlers:
+            self.button_release_handlers.append(func)
     
     def on_mouse_move(self,func):
-        self.mouse_move_handlers.append(func)
+        if func not in self.mouse_move_handlers:
+            self.mouse_move_handlers.append(func)
     
     def on_resize(self,func):
-        self.resize_handlers.append(func)
+        if func not in self.resize_handlers:
+            self.resize_handlers.append(func)
     
     def on_timer(self,func,miliseconds,*args,**kwargs):
         gobject.timeout_add(miliseconds,func,*args,**kwargs)
