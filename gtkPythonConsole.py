@@ -427,7 +427,7 @@ class GtkPythonConsole(gtk.TextView):
         else:
             string = event.string
         
-        if event.keyval < 256:
+        if event.keyval < 256 or (len(string) == 1 and ord(string) >= 32):
             if string:
                 self.insertAtCursor(string)
             self.setInteractiveLine(self.interactiveLine)
