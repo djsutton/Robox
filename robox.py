@@ -36,6 +36,7 @@ class Robot(object):
         self.penDown = False
         object.__setattr__(self,'paths',[])
         self.drawing = None
+        self.auto_draw = True
         
         if env == None:
             env = environment
@@ -243,7 +244,8 @@ class Robot(object):
         
         self.lastX, self.lastY = self.x, self.y
         
-        self.queueRedraw()
+        if self.auto_draw:
+            self.queueRedraw()
 
 
 class Path(object):
