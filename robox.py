@@ -205,7 +205,7 @@ class Robot(object):
         
         ctx.translate(drawx,drawy)
         ctx.rotate(self.heading*pi/180)
-        ctx.scale(1,-1)
+        ctx.scale(self.size,-self.size)
         ctx.save()
         
         self.draw(ctx)
@@ -225,17 +225,16 @@ class Robot(object):
         self.lastDraw=self.drawingBoundingBox()
     
     def draw(self,ctx):
-        scale = self.size/10.0
-        ctx.scale(scale,scale)
         
-        ctx.arc(0,0,10,0,2*pi)
+        ctx.arc(0,0,1,0,2*pi)
         ctx.set_source_rgba(1, 1, 1, 1)
         ctx.fill_preserve()
         
         ctx.move_to(0,0)
-        ctx.rel_line_to(0, 10)
+        ctx.rel_line_to(0, 1)
         
         ctx.set_source_rgba(0,0,0,1)
+        ctx.set_line_width(.1)
         ctx.stroke()
     
     def updateGraphics(self):
