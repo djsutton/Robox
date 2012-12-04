@@ -575,7 +575,15 @@ class Gui(object):
         self.environment.canvas = self.canvas
         self.drawing = cairo.ImageSurface(cairo.FORMAT_ARGB32, w, h)
         self.environment.drawing = self.drawing
-        self.background = cairo.ImageSurface(cairo.FORMAT_ARGB32, w, h)
+        if self.background:
+            if (w > self.background.get_width() or h > self.background.get_height()):
+                old = self.background
+                self.background = cairo.ImageSurface(cairo.FORMAT_ARGB32, max(w,old.get_width()), max(h,old.get_height()))
+                ctx = cairo.Context(self.background)
+                ctx.set_source_surface(old,0,0)
+                ctx.paint()
+        else:
+            self.background = cairo.ImageSurface(cairo.FORMAT_ARGB32, w, h)
         self.environment.background = self.background
         self.backBuffer = gtk.gdk.Pixmap(widget.window, w, h, depth=-1)
         self.environment.graphics = self.graphics
