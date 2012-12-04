@@ -463,6 +463,7 @@ class Gui(object):
         
         if not undoable:
             srcBuffer.end_not_undoable_action()
+        self.window.set_title('Robox  -  %s'%self.filename)
     
     def on_key_press(self,func):
         if func not in self.key_press_handlers:
@@ -496,6 +497,9 @@ class Gui(object):
         if char < 127:
             char = chr(char)
         return char
+    
+    def redraw(self):
+        gtkExec(self.graphics.queue_draw)
     
     def configure_window(self, window, event):
         x,y,w,h = window.get_allocation()
