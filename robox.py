@@ -313,15 +313,15 @@ class Gui(object):
         self.hpane.proportion=0
         self.hpane.width=0
         self.hpane.update = True
-        self.hpane.connect('expose-event', self.expose_pane)
-        self.hpane.positionHandler = self.hpane.connect('notify::position', self.reposition_pane)
+        #self.hpane.connect('expose-event', self.expose_pane)
+        #self.hpane.positionHandler = self.hpane.connect('notify::position', self.reposition_pane)
         
         self.vpane = gtk.VPaned()
         self.vpane.proportion=0
         self.vpane.height=0
         self.vpane.update = True
-        self.vpane.connect('expose-event', self.expose_pane)
-        self.vpane.positionHandler = self.vpane.connect('notify::position', self.reposition_pane)
+        #self.vpane.connect('expose-event', self.expose_pane)
+        #self.vpane.positionHandler = self.vpane.connect('notify::position', self.reposition_pane)
         
         self.lm = gtksourceview2.LanguageManager()
         
