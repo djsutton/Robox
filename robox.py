@@ -551,13 +551,19 @@ class Gui(object):
     
     def graphics_button_press(self, widget, event, data=None):
         widget.grab_focus()
+        _,_,w,h = self.graphics.get_allocation()
+        x = event.x - w/2.0
+        y = h/2.0 - event.y 
         for func in self.button_press_handlers:
-            func(event)
+            func(x,y,event.button)
         return True
         
     def graphics_button_release(self, widget, event, data=None):
+        _,_,w,h = self.graphics.get_allocation()
+        x = event.x - w/2.0
+        y = h/2.0 - event.y 
         for func in self.button_release_handlers:
-            func(event)
+            func(x,y,event.button)
         return True
     
     def graphics_mouse_motion(self, widget, event, data=None):
